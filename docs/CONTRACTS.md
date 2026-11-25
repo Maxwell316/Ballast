@@ -312,7 +312,8 @@ library Observations {
         uint16 index; uint16 cardinality;
         uint40 lastSwapTs; int24 lastTick; int56 cumulative; uint40 lastSnapshotTs;
     }
-    function initialize(Observation[] storage self, State storage s, uint40 time, int24 tick) internal;
+    // The ring grows lazily by push until `cardinality` entries exist, then wraps (no up-front storage cost).
+    function initialize(Observation[] storage self, State storage s, uint40 time, int24 tick, uint16 cardinality) internal;
     /// Accumulates preSwapTick x (now - lastSwapTs) if now != lastSwapTs; appends a snapshot if
     /// now - lastSnapshotTs >= minInterval. Returns whether a snapshot was written.
     function update(Observation[] storage self, State storage s, uint40 nowTs, int24 preSwapTick, uint32 minInterval) internal returns (bool snapshotted);
@@ -321,6 +322,8 @@ library Observations {
     /// Exact at snapshot times; linear interpolation between snapshots (error bound: MATH §4).
     function cumulativeAt(Observation[] storage self, State storage s, uint40 nowTs, uint32 secondsAgo, int24 currentTick) internal view returns (int56 cumulative, bool warm);
     function twapTick(Observation[] storage self, State storage s, uint40 nowTs, uint32 window, int24 currentTick) internal view returns (int24 tick, bool warm);
+    /// True iff the oldest retained snapshot is at or before nowTs - window. Monotonic for window <= anchorWindow (R-ORC-7).
+    function isWarm(Observation[] storage self, State storage s, uint40 nowTs, uint32 window) internal view returns (bool);
 }
 
 library BandMath {
@@ -336,9 +339,10 @@ library DepthMath {
 
 library StressMachine {
     // Absolute times are uint40, durations and tick thresholds are uint32 (ADR-024).
-    struct Ctx { uint40 nowTs; uint40 stressStartedAt; uint40 belowExitSince; uint32 enterTicks; uint32 exitTicks; uint32 calmDuration; uint32 maxStressLock; bool rearmBlocked; }
+    struct Ctx { uint40 nowTs; uint40 stressStartedAt; uint40 belowExitSince; uint32 enterTicks; uint32 exitTicks; uint32 calmDuration; uint32 maxStressLock; bool lockExpiryRecorded; }
     // stressStartedAt changes only on CALM -> STRESS (ADR-019). Pure; views call it as a preview.
-    function next(LockState s, int256 dev, Ctx memory c) internal pure returns (LockState ns, Ctx memory nc, bool emittedLockExpiry);
+    // `warm` gates CALM (R-STR-6). `lockJustExpired` is true when this call first recorded the expiry (ADR-033).
+    function next(LockState s, int256 dev, bool warm, Ctx memory c) internal pure returns (LockState ns, Ctx memory nc, bool lockJustExpired);
     function lockActive(LockState s, Ctx memory c) internal pure returns (bool);
 }
 
@@ -369,7 +373,7 @@ library RewardMath {
 
 ## 9. Storage layout plan
 
-Document the final layout in `ARCHITECTURE.md` §7. Rules: pack `Vault` into at most four slots; keep hot per-swap state (`lastSwapTs`, `lastTick`, `cumulative`, `lastSnapshotTs`, `stressState`, `stressStartedAt`, `belowExitSince`, `rearmBlocked`) in one slot; immutables for all `Config` fields; no dynamic arrays except observations, vault ranges (bounded) and tickets (append-only mapping keyed by id).
+Document the final layout in `ARCHITECTURE.md` §7. Rules: pack `Vault` into at most four slots; keep hot per-swap state (`lastSwapTs`, `lastTick`, `cumulative`, `lastSnapshotTs`, `stressState`, `stressStartedAt`, `belowExitSince`, `lockExpiryRecorded`) in one slot; immutables for all `Config` fields; no dynamic arrays except observations, vault ranges (bounded) and tickets (append-only mapping keyed by id).
 
 ## 10. Gas notes
 

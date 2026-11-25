@@ -458,6 +458,7 @@ Maintain `docs/THREAT_MODEL.md` with assets, trust boundaries, attacker capabili
 - **INV-12** The stress machine only makes legal transitions; the lock cannot re-arm without an intervening CALM.
 - **INV-13** No privileged address can change custody-relevant state. This is a static access-control test that enumerates all external selectors and their expected callers, plus an audit item; it is not a runtime invariant.
 - **INV-14** `SWAPPED`/`VAULT_OP` guards: no transaction contains both a swap and a vault operation.
+- **INV-15** Warm is monotonic: once the anchor window is covered by retained snapshots it never becomes uncovered (R-ORC-7).
 
 ---
 

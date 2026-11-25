@@ -204,7 +204,7 @@ flowchart LR
 
 | Slot group | Content | Written by |
 |---|---|---|
-| Hot swap state | `lastSwapTs`, `lastTick`, `cumulative`, `lastSnapshotTs`, `state`, `stressStartedAt`, `belowExitSince`, `rearmBlocked`, `oracleWarm` | `beforeSwap`, `pokeStress`, vault ops |
+| Hot swap state | `lastSwapTs`, `lastTick`, `cumulative`, `lastSnapshotTs`, `state`, `stressStartedAt`, `belowExitSince`, `lockExpiryRecorded` (warm is derived from the oldest snapshot, not stored; it is monotonic, R-ORC-7) | `beforeSwap`, `pokeStress`, vault ops |
 | Observations | Fixed-size ring of snapshots `{uint40 timestamp, int56 tickCumulative, bool initialized}` | `beforeSwap` (rate-limited) |
 | Vault records | `mapping(uint256 => Vault)`, packed into ≤ 4 slots | vault functions, checkpoints |
 | Positions | `mapping(uint256 => Position[MAX_POSITIONS])` | vault functions |

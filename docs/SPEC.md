@@ -52,6 +52,8 @@ Out of scope: native ETH, fee-on-transfer or rebasing tokens, upgradeability, ad
 - **R-ORC-2** `twapTick(window)` MUST equal `(cumulativeNow − cumulativeAt(now − window)) / window` rounded toward negative infinity.
 - **R-ORC-3** The cumulative at query time `now` MUST be `cumulative + currentTick × (now − lastSwapTs)`, using the PoolManager's current tick; this value is exact. The cumulative at a snapshot timestamp is exact. For a query time strictly between two snapshots, the cumulative MUST be linearly interpolated, which is exact only if no swap occurred between those snapshots; the resulting TWAP error bound is stated in MATH §4.
 - **R-ORC-4** If the oldest retained snapshot is newer than `now − window`, the oracle MUST use the oldest snapshot and report `warm = false` for that window. The oracle is **warm** for the stress machine iff the anchor window is fully covered, which implies the short window is covered.
+- **R-ORC-6** When the oracle is not warm for a requested window, `twapTick` MUST divide by the actual elapsed time between the oldest snapshot and `now` (and return the current tick if that is zero), not by the requested window.
+- **R-ORC-7** Warm is monotonic: once the anchor window is covered it never becomes uncovered. This holds because snapshots are at least `observationInterval` apart and cardinality is at least `ceil(anchorWindow / observationInterval) + 1` (R-ORC-5), so after any overwrite the oldest retained snapshot is at most `newest − anchorWindow` (ADR-034).
 - **R-ORC-5** Cardinality is fixed at construction and MUST be at least `ceil(anchorWindow / observationInterval) + 1` (the hard minimum). A factor of 1.1 above that is the recommended default.
 
 ## 6. Stress machine
@@ -62,8 +64,8 @@ States: `CALM`, `STRESS`, `RECOVERING`. Let `dev = collateralIsCurrency0 ? (A �
 - **R-STR-2** STRESS → RECOVERING when `dev < stressExitTicks`. RECOVERING → STRESS when `dev ≥ stressEnterTicks`; this transition MUST NOT change `stressStartedAt`, otherwise a relapse could extend the lock indefinitely against R-STR-5.
 - **R-STR-3** RECOVERING → CALM when `dev < stressExitTicks` has held continuously for `calmDuration`.
 - **R-STR-4** The lock is active while the state is not CALM and `now < stressStartedAt + maxStressLock`.
-- **R-STR-5** After the lock expires, it MUST NOT re-arm until the state has returned to CALM at least once.
-- **R-STR-6** While the oracle is not warm (R-ORC-4) the state MUST remain CALM.
+- **R-STR-5** After the lock expires, it MUST NOT re-arm until the state has returned to CALM at least once. Because `stressStartedAt` is set only on CALM → STRESS (R-STR-1, R-STR-2), an expired lock cannot become active again without an intervening CALM; the machine records the first expiry in a `lockExpiryRecorded` flag, set when `now ≥ stressStartedAt + maxStressLock` is first evaluated in a non-CALM state and cleared on entering STRESS from CALM. `LockExpired` is emitted when the flag is set (ADR-033).
+- **R-STR-6** The pure transition function takes a `warm` input (R-ORC-4). While `warm` is false the state MUST remain CALM with cleared timers. If it is ever called with a non-CALM state and `warm == false` (unreachable by R-ORC-7), it MUST return CALM, so a bad input can never trap depositors.
 - **R-STR-7** Evaluation MUST run (a) in `beforeSwap` at most once per `observationInterval`, (b) at the start of every state-changing external function that reads or acts on the lock state, including `claimRedeem`, so that no separate poke is needed to release a lock, and (c) in `pokeStress()`. The transition function MUST be pure. View functions MUST compute the lock state by applying that pure function to current inputs without writing state.
 - **R-STR-8** Threshold conversion from bps to ticks MUST round to nearest and be documented in MATH.
 - **R-STR-9** Accepted approximation: continuity of the below-exit period required by R-STR-3 is checked only at evaluation points. A deviation spike that begins and ends between two evaluations is not seen. Documented in THREAT_MODEL T3/T4.
@@ -165,7 +167,9 @@ Blocked calls MUST revert with `StressLockActive(until)` where applicable, or `N
 
 ## 14. Configuration bounds
 
-Constructor MUST revert with `InvalidConfig` unless: `100 ≤ bandBps ≤ 2500`; `50 ≤ stressEnterBps < bandBps`; `stressExitBps < stressEnterBps`; `anchorWindow ≥ 1 h`; `5 min ≤ shortWindow < anchorWindow`; `calmDuration ≥ shortWindow`; `maxStressLock ≤ 7 d`; `exitNotice ≤ 3 d`; `rerangeGrace ≥ observationInterval`; `maxAccrualInterval ≥ observationInterval`; `maxCuratorFeeBps ≤ 5000`; `observationCardinality ≥ ceil(anchorWindow / observationInterval) + 1`; `collateral != quote`; neither is zero; `initializer != address(0)`; `fee` is a static fee not exceeding the PoolManager maximum and not the dynamic-fee flag; `tickSpacing` lies within the PoolManager's bounds (**VERIFY** constants in `TickMath`).
+- **R-CFG-1** Constructor MUST revert with `InvalidConfig` unless: `100 ≤ bandBps ≤ 2500`; `50 ≤ stressEnterBps < bandBps`; `stressExitBps < stressEnterBps`; `anchorWindow ≥ 1 h`; `5 min ≤ shortWindow < anchorWindow`; `calmDuration ≥ shortWindow`; `maxStressLock ≤ 7 d`; `exitNotice ≤ 3 d`; `rerangeGrace ≥ observationInterval`; `maxAccrualInterval ≥ observationInterval`; `maxCuratorFeeBps ≤ 5000`; `observationCardinality ≥ ceil(anchorWindow / observationInterval) + 1`; `collateral != quote`; neither is zero; `sponsor != address(0)` and `initializer != address(0)`; `fee` is a static fee not exceeding the PoolManager maximum and not the dynamic-fee flag; `tickSpacing` lies within the PoolManager's bounds (**VERIFY** constants in `TickMath`).
+
+- **R-DEP-1** The hook MUST be deployed only at an address whose low 14 bits equal `getHookPermissions()` exactly. The deployment script mines the salt with `HookMiner` and asserts the result (T15); `BaseHook`'s constructor reverts otherwise.
 
 ## 15. Edge cases
 

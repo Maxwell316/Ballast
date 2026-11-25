@@ -56,7 +56,7 @@ Handler actions (each bounded and guarded to avoid trivially reverting calls):
 
 Ghost variables: total deposited and withdrawn per currency, total credited rewards, total funded, per-vault shares, number of lock violations (must stay zero), observed state transitions.
 
-Invariants implemented: INV-1 … INV-12 and INV-14 (see CLAUDE.md §8.2). INV-3 is the inequality form (claims held ≥ Σ idle + curatorOwed + standby fund, per currency) plus a ghost ledger of PoolManager-reported deltas for principal, with dust always in the vault's favour. INV-13 is **not** a runtime invariant: it is a static access-control test that enumerates every external selector of the hook and asserts the expected callers (§3.7). Use `fail_on_revert = false`, and assert in handlers that expected reverts are the expected errors.
+Invariants implemented: INV-1 … INV-12, INV-14 and INV-15 (warm is monotonic) (see CLAUDE.md §8.2). INV-3 is the inequality form (claims held ≥ Σ idle + curatorOwed + standby fund, per currency) plus a ghost ledger of PoolManager-reported deltas for principal, with dust always in the vault's favour. INV-13 is **not** a runtime invariant: it is a static access-control test that enumerates every external selector of the hook and asserts the expected callers (§3.7). Use `fail_on_revert = false`, and assert in handlers that expected reverts are the expected errors.
 
 ### 3.5 Scenario
 | Test | Narrative | Asserts |
@@ -85,6 +85,13 @@ Run key flows on the target chain's PoolManager at a pinned block. Skip with a c
 | Static analysis | Slither clean or each finding justified in `docs/SLITHER_NOTES.md` |
 | Formatting | `forge fmt --check` |
 | Size | `forge build --sizes`: hook below limit with ≥ 2% margin |
+
+## 4a. Library test conventions (M1 onwards)
+- **Decimals and ordering matrix.** The default fixture is collateral 18 decimals and quote 6. Library and differential tests also run (a) collateral 6 and quote 18, (b) equal decimals, and (c) both currency orderings (collateral as currency0 and as currency1). Every band and depth test covers both collateral directions. The start tick for a 1:1 human price is derived from the decimals (see `test/utils/Scenario.sol`).
+- **Requirement tags.** Every test carries `@custom:requirement R-…` (and `@custom:invariant INV-n` where relevant). `tools/compliance.py` reads them and reports which SPEC requirements have no test (`docs/COMPLIANCE.md`). It reports only, until the suite is complete.
+- **Coverage gate.** Until M2 the gate covers `src/libraries/` only (≥ 95% lines, ≥ 90% branches); from M2 it covers all of `src/`.
+- **Mutation sanity check.** After each library's tests pass, a scratch change breaks its rounding direction, bounds or comparison and at least one test must fail; the mutations tried and the tests that caught them are recorded in the milestone report. Scratch changes are reverted.
+- **Gas.** `test/gas/` measures each oracle path with cold storage and records them in `.gas-snapshot` and in this document. `beforeSwap` may do only the O(1) accumulator update plus at most one snapshot write per interval; the binary search runs only on the evaluation path and in views.
 
 ## 5. Test data and fixtures
 

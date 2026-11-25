@@ -19,6 +19,7 @@ Ballast custodies liquidity. Treat it as unaudited software unless an audit repo
 - A cold or very sparse pool has no stress protection until its oracle is warm.
 - A well-capitalized attacker can trigger or delay a lock in a shallow pool (see `docs/THREAT_MODEL.md`, T3, T4 and T18).
 - Depth is counted equally anywhere in the band (T5).
+- OpenZeppelin `uniswap-hooks` v1.2.1 (`BaseHook`, `CurrencySettler`) is **not itself audited**. According to OpenZeppelin's published pages, earlier release candidates (v1.0.0 RC 1, v1.1.0 RC 1 and RC 2) were audited, and `BaseHook` and `CurrencySettler` were in those scopes. We could not machine-read the audit PDFs in the repository, so this is taken from the web pages and not independently confirmed. The repository's own README also states the code has not been audited.
 - Standby accrual uses conservative endpoint sampling; intermediate dips are bounded only by `maxAccrualInterval`.
 - Sponsor funds are not withdrawable in v1. The sponsor stops spending by setting the rate to zero and should fund in tranches (ADR-021).
 - Exit race at crash onset (T18): stress detection uses a short TWAP and lags spot, so holders with already matured tickets can exit in the first minutes of a crash before the lock engages. `liveDepth` nets exits maturing inside the consumer's horizon so the exposure is visible.

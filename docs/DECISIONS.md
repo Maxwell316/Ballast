@@ -171,6 +171,29 @@ Append-only. Each entry: Context, Decision, Consequences, Status. Changing an ac
 **Status:** Accepted
 **Decision:** Q-2 licence MIT. Q-3 chain Unichain Sepolia, ID 1301. Q-4 demo assets are mocks (decimals still to choose). Q-8 curators are permissionless. Q-9 deposits are blocked in both STRESS and RECOVERING (as SPEC §6.1 already states). Q-1, Q-5, Q-6, Q-7 remain open.
 
+## ADR-033 — StressMachine takes `warm`; `rearmBlocked` becomes `lockExpiryRecorded`
+**Status:** Accepted (human approved, M0/M1 plan)
+**Decision:** `StressMachine.next(state, dev, warm, ctx)` takes `warm` so R-STR-6 lives in the pure function. `rearmBlocked` is replaced by `lockExpiryRecorded`. With ADR-019 (`stressStartedAt` set only on CALM → STRESS) an expired lock cannot become active again without an intervening CALM, so the old flag was redundant; the new flag exists only so `LockExpired` is emitted once. It is set when expiry is first evaluated in a non-CALM state and cleared on CALM → STRESS. A non-CALM state with `warm == false` returns CALM (unreachable; fails safe).
+
+## ADR-034 — Warm is monotonic (R-ORC-7, INV-15)
+**Status:** Accepted
+**Decision:** Warm is derived (oldest snapshot ≤ now − window), not latched. It is monotonic because snapshots are ≥ `observationInterval` apart and cardinality ≥ `ceil(anchorWindow/observationInterval) + 1` (proof in MATH §4). A fuzz test and invariant INV-15 check it. When not warm, `twapTick` divides by the actual elapsed time since the oldest snapshot (R-ORC-6).
+
+## ADR-035 — `bpsToTicksDown` epsilon rule
+**Status:** Accepted
+**Decision:** `bpsToTicksDown = floor((Δ_raw − 1e9 WAD-units) / 1e18)` where `Δ_raw` comes from `lnWad`. The postcondition against a committed 60-digit reference table is `floor(Δ_ref) − 1 ≤ result ≤ floor(Δ_ref)` for all `bps ∈ [1, 2500]`, and `Δ_wad ≤ Δ_ref`. See MATH §2.
+
+## ADR-036 — Oracle gas design
+**Status:** Accepted
+**Decision:** `beforeSwap` performs only the O(1) accumulator update and at most one snapshot write per `observationInterval`. The ring buffer grows lazily by push (no up-front storage cost). Binary search runs only on the stress-evaluation path (at most once per interval) and in views. Measured gas per path is recorded in `.gas-snapshot` and TESTING.
+
+## ADR-037 — Configuration additions
+**Status:** Accepted
+**Decision:** SPEC §14 is now R-CFG-1 and additionally requires `sponsor != address(0)` (a zero sponsor would permanently disable standby funding). The `stressExit < stressEnter` check also applies after bps→tick rounding (added with `BandMath`).
+
+## Carry-forward note for M3 (re-range dust)
+The fork test showed that removing liquidity rounds amounts down and adding rounds up, so recovered tokens do not exactly refund the same liquidity. `rerange` must therefore not assume it can re-add the removed liquidity from the recovered tokens alone. The M3 plan must propose: how a shortfall of a few wei per position and currency is funded from `idle`; what happens when idle is insufficient (revert with a clear error versus reducing liquidity); who bears the cumulative dust loss (shareholders, pro rata, since no actor is charged); and a test that the loss is bounded per re-range.
+
 ## Pinned dependencies
 
 | Dependency | Commit / tag | Role |

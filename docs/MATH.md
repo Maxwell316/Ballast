@@ -23,7 +23,14 @@ In both cases the tick distance is
 ```
 Illustration: `x = 7.5%` gives `Δ ≈ 779.6` ticks (the real implementation must compute this on-chain and test against a high-precision reference).
 
-- **`bpsToTicksDown(bps)`:** `floor(Δ(x))`. Used for the band: a narrower band means less depth, which is conservative.
+- **`bpsToTicksDown(bps)`:** conservative floor of `Δ(x)`, defined precisely below. Used for the band: a narrower band means less depth, which is conservative.
+
+**Epsilon rule (ADR-035).** Let `Δ_ref(bps)` be the exact value (computed off-chain with 60-digit decimal arithmetic and committed as `test/data/band_ticks_ref.json`, with `Δ_ref` in WAD). On-chain, `Δ_raw = lnWad(1e18 · 10000 / (10000 − bps)) · 1e18 / LN_1_0001_WAD` and
+```
+Δ_wad = Δ_raw − EPS_WAD            // EPS_WAD = 1e9, i.e. 1e-9 ticks
+bpsToTicksDown = floor(Δ_wad / 1e18)
+```
+`EPS_WAD` must exceed the worst-case fixed-point error of `Δ_raw` so that `Δ_wad ≤ Δ_ref` always holds. The contractual postcondition for every `bps` in `[1, 2500]` is `floor(Δ_ref) − 1 ≤ result ≤ floor(Δ_ref)`. The test checks this against the committed table for all 2,500 values, checks `Δ_wad ≤ Δ_ref` in WAD, and a mutation run with `EPS_WAD = 0` must break at least one check.
 - **`bpsToTicksNearest(bps)`:** `round(Δ(x))`. Used for stress thresholds, where bias in either direction is a policy choice and nearest is neutral.
 - On-chain: compute `ln` with a fixed-point library (for example solady `lnWad`), then divide by the constant `ln(1.0001)` in WAD. Validate in tests over the full bps range against a reference implementation, with a maximum permitted error of 1 tick.
 
@@ -93,7 +100,8 @@ Observation: `(t_k, C_k)` with `C_k = Σ tick_j · Δt_j`. Between swaps the tic
 - **Exact current value.** `C(now) = C + τ_now · (now − t_s)` with `τ_now` the PoolManager's current tick. This is exact because the tick has not changed since the last swap.
 - **Query at `t* < now`.** If `t*` is a snapshot time the value is exact. Otherwise linearly interpolate between the bracketing snapshots `(t_a, C_a)` and `(t_b, C_b)`. For `t* ≥` the newest snapshot the bracket is `(t_snap, C_snap)` and `(t_s, C)` when `t_s > t_snap`, else the exact extension above.
 - **TWAP over window `W`:** `(C(now) − C(now − W)) / W`, rounded toward negative infinity (if the difference is negative and not divisible, subtract one).
-- **Warmth.** `warm_W` holds iff the oldest retained snapshot has timestamp `≤ now − W`. The stress machine requires `warm_anchorWindow`, which implies the short window is covered. Otherwise the oldest snapshot is used and `warm = false`.
+- **Warmth.** `warm_W` holds iff the oldest retained snapshot has timestamp `≤ now − W`. The stress machine requires `warm_anchorWindow`, which implies the short window is covered. Otherwise the oldest snapshot is used and `warm = false`; the TWAP is then `(C(now) − C_oldest) / (now − t_oldest)` (R-ORC-6), or the current tick if `now == t_oldest`.
+- **Warm is monotonic (R-ORC-7, ADR-034).** Snapshot times are strictly increasing with gaps `≥ I`. Cardinality `N ≥ ceil(W/I) + 1`. After the ring is full, the oldest retained snapshot is the `N`-th newest, with timestamp `≤ t_newest − (N−1)·I ≤ t_newest − W ≤ now − W`. Before the ring is full nothing is overwritten, so the oldest snapshot is the first one and `now − W` only grows. Hence `warm` can only go from false to true.
 
 **Interpolation error bound.** Interpolation is exact whenever no swap occurred between the two bracketing snapshots, because the tick is then constant and `C` is linear. Snapshots are written at swap times with spacing at least `I = observationInterval`. Any swap that fell between two consecutive snapshots `t_a < t_b` must lie in `[t_a, t_a + I)`: a later swap would itself have satisfied the spacing rule and been snapshotted, and a swap at or after `t_a + I` is `t_b`. On `[t_a + I, t_b]` the tick is constant, so the non-linear part is confined to an interval of length less than `I`. Let `Δτ` be the maximum tick swing during that interval. Then `|C_interp(t*) − C(t*)| ≤ I · Δτ`, and since only the window-start term is interpolated (the end term is exact):
 ```
