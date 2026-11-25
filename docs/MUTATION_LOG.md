@@ -32,3 +32,19 @@ Two first-round findings were fixed before the final run: the bias-size test com
 
 Observation: the deposit-then-redeem round-trip tests alone do **not** catch a single flipped direction (the property still holds when only one step favours the actor); they catch the combined flip. Single flips are caught by the bracket and rounding-favours-vault tests, so those tests are the load-bearing ones for T9.
 The mutation harness initially matched only some failing fuzz tests (its failure regex mishandled counterexample output); the BandMath results above were re-run with the fixed harness and are unchanged.
+
+## RewardMath (M1)
+| Mutation | Result |
+|---|---|
+| `accrue` rounds up | Caught by `testFuzz_Accrue_IsExactFloor`, `testFuzz_Accrue_SplittingIntervalNeverPaysMore`, two unit tests |
+| `accrue` wrong scale | Caught by `testFuzz_Accrue_IsExactFloor` and two unit tests |
+| `eligible` ignores the commitment | Caught by `testFuzz_Eligible_IsMinimumOfThree` |
+| `eligible` uses the larger depth sample | Caught by `testFuzz_Eligible_IsMinimumOfThree` |
+| `accrualInterval` not capped | Caught by `testFuzz_AccrualInterval_NeverExceedsCapOrElapsed`, `test_AccrualInterval_Cases` |
+| `accrualInterval` `<=` changed to `<` | **Survived: equivalent mutant.** At `now == last` the elapsed time is 0, so both forms return 0. The `==` case is redundant; left in for clarity. |
+| `capToFund` returns the larger value | Caught by `test_CapToFund` |
+| Curator share rounds up | Caught by `testFuzz_SplitCurator_ConservesAndRoundsTowardDepositors`, `test_SplitCurator_Examples` |
+| Fee bound `>` changed to `>=` | Caught by `testFuzz_SplitCurator_ConservesAndRoundsTowardDepositors`, `test_SplitCurator_Examples` |
+| Fee bound check removed | Caught by `test_RevertWhen_FeeAbove100Percent` |
+
+First-run finding: my NatSpec and test claimed the maximum reward is below 2^228; at the extreme inputs it is about 2^228.2. The test caught it; the bound is now 2^229.
