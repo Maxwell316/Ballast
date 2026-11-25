@@ -3,3 +3,5 @@ cache/
 .env
 .DS_Store
 broadcast/
+lcov.info
+.gas-snapshot.tmp

@@ -9,6 +9,23 @@ jobs:
       - uses: actions/checkout@v4
         with: { submodules: recursive }
       - uses: foundry-rs/foundry-toolchain@v1
-      - run: forge fmt --check
-      - run: forge build --sizes
-      - run: forge test -vvv
+      - name: Format
+        run: forge fmt --check
+      - name: Build and sizes
+        run: forge build --sizes
+      - name: Tests
+        run: forge test -vvv
+      - name: Coverage gate (src/libraries only until M2, then all of src/)
+        run: |
+          forge coverage --report lcov --no-match-path "test/fork/*"
+          python3 tools/coverage_gate.py lcov.info src/libraries/ --lines 95 --branches 90
+      - name: Compliance report
+        run: python3 tools/compliance.py
+  slither:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { submodules: recursive }
+      - uses: foundry-rs/foundry-toolchain@v1
+      - run: pip install slither-analyzer
+      - run: slither . --config-file slither.config.json
