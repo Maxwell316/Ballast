@@ -48,3 +48,24 @@ The mutation harness initially matched only some failing fuzz tests (its failure
 | Fee bound check removed | Caught by `test_RevertWhen_FeeAbove100Percent` |
 
 First-run finding: my NatSpec and test claimed the maximum reward is below 2^228; at the extreme inputs it is about 2^228.2. The test caught it; the bound is now 2^229.
+
+## DepthMath (M1)
+Tests: `test/unit/libraries/DepthMath.t.sol` (unit and properties, all six decimals/ordering scenarios, both directions) and `test/fuzz/DifferentialDepthMath.t.sol` (real PoolManager, swap to a far-edge `sqrtPriceLimit`, LP fee 0 / 0.3% / 1%, protocol fee 0 / 400 / 1000 pips in the liquidation direction with a different value in the other direction, net of both fees).
+
+| Mutation | Result |
+|---|---|
+| `absorbable` rounds up (token0) / (token1) | Caught by both differential tests and two unit tests each |
+| Overlap lower bound `max` → `min` (token0) | Caught by seven tests including the off-chain worked examples |
+| Overlap upper bound `min` → `max` (token0) | Caught by both differential tests and four unit tests |
+| Overlap lower bound `max` → `min` (token1) | Caught by both differential tests and three unit tests |
+| Overlap upper bound `min` → `max` (token1) | Caught by both differential tests and four unit tests |
+| Live depth: spot cap removed (token0) / spot floor removed (token1) | Caught by both live differential tests and the live-equals-anchor test |
+| Live depth: lower/upper bound `max`/`min` flipped | Caught by both live differential tests and the live-equals-anchor test |
+| Fee: directional protocol-fee halves swapped | Caught by both differential tests and `test_EffectiveSwapFee_MatchesV4Formula` |
+| Fee: protocol fee ignored | Caught by `test_EffectiveSwapFee_MatchesV4Formula` |
+| `grossUp` rounds down | Caught by `testFuzz_GrossUp_IsUpperBoundOfInverse` |
+| `grossUp` 100%-fee bound `>=` → `>` | Caught by `test_RevertWhen_SwapFeeIs100Percent` |
+
+**Equivalent mutants (survived, by construction):** the `hi <= lo` → `<` and `sqrtHi <= sqrtLo` → `<` comparisons (equal bounds give a zero amount either way) and removing the `liquidity == 0` guard (zero liquidity gives a zero amount). These guards only save gas. Two orientation guards (`farTick >= nearTick`, `nearTick >= farTick`) were found to be **fully redundant** (an inverted band always yields `hi < lo`) and were removed from `absorbable`, along with the mutants that targeted them.
+
+**Measured rounding bound (differential):** in the 216-case grid (3 positions each) the measured net input exceeded `DepthMath` by 1 to 5 wei and never fell below it. The test bound is `4·(positions + 1) + 4` wei.

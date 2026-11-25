@@ -160,7 +160,7 @@ The same split applies to crystallized trading fees per currency. Rounding favou
 
 | Property | Reference | Tolerance |
 |---|---|---|
-| `DepthMath` ≤ brute-force swap | Real PoolManager swap of increasing size until price reaches the far edge, measuring input net of fee | Never overstates; understatement bounded by rounding (document the bound) |
+| `DepthMath` ≤ brute-force swap | Real PoolManager swap with `sqrtPriceLimit` at the far-edge tick (single exact-input swap), measuring input net of the LP fee (positions poked for `feesAccrued`) and of the protocol fee (`protocolFeesAccrued`), fee > 0 and nonzero protocol fee | Never overstates. Measured understatement 1–5 wei for 3 positions; test bound `4·(positions + 1) + 4` wei (`DifferentialDepthMath.t.sol`) |
 | `bpsToTicks*` | High-precision off-chain log | ≤ 1 tick; direction as specified |
 | `Observations.twapTick` | Naive full-history model | Exact up to rounding rule |
 | `StressMachine.next` | Table-driven model | Exact |
