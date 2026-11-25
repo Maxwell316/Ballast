@@ -2,8 +2,8 @@
 
 After each library's tests pass, a scratch change breaks one rounding direction, bound or comparison; at least one test must fail. The change is then reverted (the working tree is checked clean). Procedure and tooling: TESTING §4a.
 
-## ConfigLib (M0)
-Not mutated in M0: every bound is tested on both sides, and `testFuzz_Validate_NeverAcceptsCardinalityBelowMinimum` covers the ceiling formula. (Mutation of ConfigLib may be added with the M2 hook tests.)
+## ConfigLib (M0, mutated at the end of M1)
+25 mutations, one per bound or check in `ConfigLib.validate` (every `<`/`>`/`<=`/`>=` boundary, the fee cap and dynamic-fee flag, tick spacing bounds, band and stress thresholds, hysteresis, windows, durations, interval, grace and accrual bounds, curator fee cap, the cardinality formula (dropping the `+ 1`, rounding down, `<` → `<=`), zero sponsor or initializer, equal or native currencies). All 25 were caught by `test_*_Bounds`-style tests in `ConfigLib.t.sol` and the cardinality fuzz; none survived.
 
 ## BandMath (M1)
 | Mutation | Result |
