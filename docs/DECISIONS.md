@@ -189,7 +189,7 @@ Append-only. Each entry: Context, Decision, Consequences, Status. Changing an ac
 
 ## ADR-037 — Configuration additions
 **Status:** Accepted
-**Decision:** SPEC §14 is now R-CFG-1 and additionally requires `sponsor != address(0)` (a zero sponsor would permanently disable standby funding). The `stressExit < stressEnter` check also applies after bps→tick rounding (added with `BandMath`).
+**Decision:** SPEC §14 is now R-CFG-1 and additionally requires `sponsor != address(0)` (a zero sponsor would permanently disable standby funding). The `stressExit < stressEnter` check after bps→tick rounding needs no extra code: consecutive bps differ by at least `1/ln(1.0001) ≈ 1.0001` ticks, so exit < enter in bps implies `round(Δ(exit)) < round(Δ(enter))`; `BandMath.t.sol` verifies it for every enter in [51, 2500].
 
 ## Carry-forward note for M3 (re-range dust)
 The fork test showed that removing liquidity rounds amounts down and adding rounds up, so recovered tokens do not exactly refund the same liquidity. `rerange` must therefore not assume it can re-add the removed liquidity from the recovered tokens alone. The M3 plan must propose: how a shortfall of a few wei per position and currency is funded from `idle`; what happens when idle is insufficient (revert with a clear error versus reducing liquidity); who bears the cumulative dust loss (shareholders, pro rata, since no actor is charged); and a test that the loss is bounded per re-range.

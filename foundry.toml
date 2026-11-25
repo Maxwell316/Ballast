@@ -9,7 +9,7 @@ evm_version = "cancun"
 optimizer = true
 optimizer_runs = 200
 bytecode_hash = "none"
-fs_permissions = [{ access = "read-write", path = "./deployments" }, { access = "read", path = "./config" }]
+fs_permissions = [{ access = "read-write", path = "./deployments" }, { access = "read", path = "./config" }, { access = "read", path = "./test/data" }]
 
 [profile.default.fuzz]
 runs = 1000

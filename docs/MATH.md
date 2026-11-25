@@ -117,7 +117,7 @@ dev = c0 ? (A − S) : (S − A)     // ticks; positive means the short TWAP is 
 enterTicks = bpsToTicksNearest(stressEnterBps)
 exitTicks  = bpsToTicksNearest(stressExitBps)
 ```
-Hysteresis requires `exitTicks < enterTicks`; the constructor rejects configurations where rounding makes them equal.
+Hysteresis requires `exitTicks < enterTicks`. Rounding cannot make them equal: consecutive bps differ by at least `1/ln(1.0001) ≈ 1.0001` ticks, so `stressExitBps < stressEnterBps` already implies `round(Δ(exit)) < round(Δ(enter))` (verified for every enter in [51, 2500] in `BandMath.t.sol`). The constructor therefore needs no separate tick-level check.
 
 ## 6. Proportional shares
 
