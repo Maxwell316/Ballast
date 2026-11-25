@@ -11,8 +11,8 @@ This file is the entry point for Claude Code. Read it fully before touching any 
 
 ### 0.1 Order of authority
 1. Instructions from the human maintainer in the current session.
-2. This file (`CLAUDE.md`).
-3. `docs/SPEC.md` (normative spec, once it exists), then `docs/MATH.md`, `docs/THREAT_MODEL.md`.
+2. This file (`CLAUDE.md`) on scope and process.
+3. `docs/SPEC.md` and `docs/CONTRACTS.md` on behavioural detail (they win over §6 of this file, per §18), then `docs/MATH.md`, `docs/THREAT_MODEL.md`.
 4. `docs/DECISIONS.md` (architecture decision records you write as you go).
 5. Code comments and NatSpec.
 
@@ -93,6 +93,7 @@ There is **no owner, no admin, no pause, no upgrade path** (D-1).
 - Multi-pool vaults, cross-chain, auctions for the standby rate, IL protection, price-loss insurance.
 - A real lending-protocol integration (we ship a reference advisor view only).
 - `BeforeSwapDelta`/return-delta hooks. Ballast does not need them. Do not add them to chase the rubric.
+- Sponsor withdrawal of standby funds (ADR-021): funds are not withdrawable in v1; the sponsor stops spending by setting the rate to zero.
 - Any claim that depositors are protected from price losses. The lock **traps risk on purpose**; it does not remove it. Docs must say this plainly.
 
 ---
@@ -118,7 +119,7 @@ There is **no owner, no admin, no pause, no upgrade path** (D-1).
 
 **DECISION D-3:** logic lives in small internal libraries with pure/`view` functions that are unit- and fuzz-testable in isolation. The hook contract orchestrates. If bytecode approaches the size limit, move read-only code to `BallastLens`; do not use external library linking (it complicates address mining).
 
-**DECISION D-4:** use `v4-periphery`'s `BaseHook` (the rubric names `BaseHook` and `getHookPermissions`). Use OpenZeppelin `uniswap-hooks` only for audited utilities if needed (for example currency settlement helpers). Record the pinned versions in `docs/DECISIONS.md`. **VERIFY** the exact `BaseHook` API (constructor address validation, internal `_before*` overrides) in the pinned `lib/v4-periphery`.
+**DECISION D-4 (ADR-030):** use OpenZeppelin `uniswap-hooks` v1.2.1 for `BaseHook` (the rubric names `BaseHook` and `getHookPermissions`) and `CurrencySettler` (claims-based settlement via its `burn`/`claims` flags). `v4-periphery` is a test-only dependency (PositionManager, Permit2): it no longer ships `BaseHook` or `HookMiner`. We write our own minimal `HookMiner` in `script/`. Pins are in the "Pinned dependencies" table of `docs/DECISIONS.md`; the API is recorded in `docs/VERIFICATION.md` F-1.
 
 ### 4.2 Repository layout
 
@@ -144,7 +145,8 @@ ballast/
 │   ├── DEPLOYMENT.md              # networks, mining, verification, manifest
 │   ├── SIMULATION.md              # crash simulation protocol and results
 │   ├── RUBRIC_MAP.md              # rubric → evidence in repo
-│   └── DECISIONS.md               # ADRs (append-only)
+│   ├── DECISIONS.md               # ADRs (append-only)
+│   └── VERIFICATION.md            # evidence for every VERIFY item
 ├── src/
 │   ├── BallastHook.sol
 │   ├── periphery/
@@ -171,7 +173,7 @@ ballast/
 │   ├── scenario/                  # multi-actor narratives (crash, breach, drought)
 │   └── utils/                     # fixtures, handlers, mock tokens, actors, routers
 ├── script/
-│   ├── DeployBallast.s.sol        # HookMiner + CREATE2 deployment
+│   ├── DeployBallast.s.sol        # own HookMiner (script/utils) + CREATE2 deployment + pool init
 │   ├── CreatePool.s.sol
 │   ├── SeedVaults.s.sol
 │   ├── FundStandby.s.sol
@@ -212,6 +214,9 @@ struct Config {
     Currency collateral;         // the asset being liquidated (sold into the pool)
     Currency quote;              // the asset liquidators receive
     address  sponsor;
+    address  initializer;        // only address allowed to initialize the pool (ADR-014)
+    uint24   fee;                // static LP fee the pool must use
+    int24    tickSpacing;        // tick spacing the pool must use
     uint16   bandBps;            // X: depth band, price impact below the anchor
     uint16   stressEnterBps;     // θ: short TWAP deviation that enters stress
     uint16   stressExitBps;      // < θ (hysteresis), e.g. θ/2
@@ -244,7 +249,7 @@ struct Vault {
     uint40  breachSince;         // 0 if covered
 }
 
-struct RedeemTicket { uint256 vaultId; address owner; address receiver; uint128 shares; uint40 maturity; }
+struct RedeemTicket { uint256 vaultId; address owner; uint128 shares; uint40 maturity; }   // receiver is chosen at claim time (ADR-016)
 
 struct CuratorRecord {           // exact on-chain counters, no off-chain inputs
     uint64  coveredSeconds;      // seconds with coverage >= commitment while tracked
@@ -265,11 +270,12 @@ Constants: `MAX_VAULTS = 16`, `MAX_POSITIONS = 8`, `MINIMUM_SHARES = 1e3`. All l
 ## 6. Mechanism specification
 
 ### 6.1 Pool binding (`beforeInitialize`)
+- `sender == config.initializer`, otherwise revert `PoolInitializerOnly(sender)` (ADR-014). The deploy script deploys the hook and initializes the pool in one broadcast.
 - `key.hooks == address(this)`; pool not already bound (D-2).
-- Fee must be static: reject `LPFeeLibrary.DYNAMIC_FEE_FLAG`.
+- Fee must be static: reject `LPFeeLibrary.DYNAMIC_FEE_FLAG`; `key.fee == config.fee` and `key.tickSpacing == config.tickSpacing`, otherwise `InvalidPoolKey`.
 - Neither currency may be native (zero address).
 - One currency equals `config.collateral`, the other `config.quote`. Store `collateralIsCurrency0`.
-- Tick spacing: any valid value; store it. All range ticks must be multiples of it.
+- Tick spacing is fixed by `config.tickSpacing`. All range ticks must be multiples of it.
 - Store `poolId`. `afterInitialize` seeds observation 0 with the initial tick and timestamp.
 
 ### 6.2 Hook permissions (`getHookPermissions`)
@@ -286,14 +292,14 @@ Enable only what is needed (**DECISION D-5**):
 
 **VERIFY** in the pinned `lib/v4-core/src/libraries/Hooks.sol`: (a) flag constants (use `Hooks.*_FLAG` names, never hard-code bits); (b) that the PoolManager does not invoke a hook's callbacks when the hook itself is the caller of `modifyLiquidity` (the "no self call" behaviour). Ballast relies on (b): the hook's own liquidity operations bypass its callbacks, so `beforeAddLiquidity`/`beforeRemoveLiquidity` can **revert unconditionally** for everyone else. Add a test proving PositionManager and a plain router both fail to add/remove liquidity (G-1).
 
-**VERIFY** hook-address permission bit order on the target chain's PoolManager. A third-party scanner reports that Unichain's deployment uses a preview PoolManager with a different bit order from final v4. Treat this as unconfirmed. Before mining the final address, deploy a throwaway hook on the target chain and prove the permission bits behave as expected.
+**VERIFIED (docs/VERIFICATION.md F-3):** the Unichain Sepolia PoolManager's runtime code equals Ethereum mainnet's apart from its embedded self-address, and `test/fork/HooksOnChain.t.sol` exercises all five of Ballast's flags against it on a fork. Keep that test and the deploy script's address-flag assertion; re-run the fork test before mining an address on any other chain. A funded testnet deployment is due in M2 and M9.
 
 ### 6.3 Oracle (`Observations`)
 - Ring buffer of `{ uint32 timestamp, int56 tickCumulative }`. Own implementation; v3's `Oracle.sol` is GPL, so do not copy it. Match its semantics.
-- Written at the start of `beforeSwap` using the **pre-swap tick** (`slot0.tick`) for the interval since the last write: `tickCumulative += tick_preSwap × Δt`. Because price only changes at swaps, the accumulator is exact between writes. Never write twice in the same timestamp (this is what makes in-block manipulation worthless).
-- Writes are rate-limited by `observationInterval`.
-- `observe(secondsAgo)` interpolates between neighbouring observations (binary search). `twapTick(window)` = Δcumulative / window. Rounding: round toward negative infinity, like v3.
-- Cardinality is fixed at construction and sized to cover `anchorWindow / observationInterval` with margin. If history is shorter than the window, use the available history and flag `oracleWarm = false`; the stress machine stays CALM and fee accrual continues while warming.
+- **Running accumulator (ADR-013).** State `(lastSwapTs, lastTick, cumulative)`. At the start of every `beforeSwap` whose timestamp differs from `lastSwapTs`, using the **pre-swap tick** (`slot0.tick`): `cumulative += tick_preSwap × (now − lastSwapTs)`. Because price only changes at swaps, the accumulator is exact. Never accumulate twice in the same timestamp (this is what makes in-block manipulation worthless).
+- Only the ring-buffer **snapshots** are rate-limited by `observationInterval`. Snapshot values are exact. The current cumulative is exact (`cumulative + currentTick × (now − lastSwapTs)`).
+- `cumulativeAt(secondsAgo)` interpolates between neighbouring snapshots (binary search); exact only if no swap occurred between them. Error bound in `docs/MATH.md` §4: TWAP error ≤ `observationInterval × max tick swing / window`. `twapTick(window)` = Δcumulative / window. Rounding: toward negative infinity, like v3.
+- Cardinality is fixed at construction; hard minimum `ceil(anchorWindow / observationInterval) + 1`, recommended default 1.1× that. **Warm** means the anchor window is fully covered by retained snapshots (this implies the short window is covered). If not warm, use the oldest snapshot and flag `oracleWarm = false`; the stress machine stays CALM and fee accrual continues while warming.
 - Anchor `A = twapTick(anchorWindow)`. Short price `S = twapTick(shortWindow)`.
 
 ### 6.4 Stress machine (`StressMachine`)
@@ -305,9 +311,9 @@ CALM ───────────────────▶ STRESS ──�
                             ▲   dev < θ_exit │
                             └───────────────┘ (dev ≥ θ_enter again)
 ```
-- **Lock window.** On entering STRESS from CALM, set `stressStartedAt`. The lock is active while state ≠ CALM **and** `now < stressStartedAt + maxStressLock`.
+- **Lock window.** On entering STRESS from CALM, set `stressStartedAt`. It is set on that transition only: RECOVERING → STRESS does not reset it (ADR-019). The lock is active while state ≠ CALM **and** `now < stressStartedAt + maxStressLock`.
 - **No re-arming (D-6).** After the lock expires, it cannot re-arm until the state has returned to CALM at least once. This bounds how long anyone can be trapped.
-- Evaluation is lazy: run at most once per `observationInterval` inside `beforeSwap`, and on every state-changing hook function, and via public `pokeStress()`. A pure `StressMachine.next(state, dev, now, ctx)` function holds all logic and is fuzzed independently.
+- Evaluation is lazy: run at most once per `observationInterval` inside `beforeSwap`, at the start of every state-changing function (including `claimRedeem`, so no poke is needed to release a lock), and via public `pokeStress()`. Views use a pure preview of the transition. Accepted approximation: continuity of the calm period is checked at evaluation points only. A pure `StressMachine.next(state, dev, now, ctx)` function holds all logic and is fuzzed independently.
 - Manipulation resistance: transitions use TWAPs, not spot, and the short window must exceed a few observation intervals. Document the attacker cost model in `THREAT_MODEL.md`.
 
 ### 6.5 Band and depth maths (`BandMath`, `DepthMath`)
@@ -328,16 +334,16 @@ Implementation notes: convert bps to ticks conservatively; clamp to `MIN_TICK/MA
 2. For each position, `ΔL_i = ceilDiv(L_i × shares, totalShares)`; add that liquidity via `modifyLiquidity` from inside the unlock.
 3. Also require `idle0/idle1` proportional slices, rounded up.
 4. Depositor pays exactly the PoolManager deltas plus idle slices; revert if above `amount*Max`.
-5. Mint shares. The **first** deposit into a vault uses the dedicated `seed(vaultId, liquidities, amount0Max, amount1Max, receiver)` entrypoint (see `docs/CONTRACTS.md`): it mints `INITIAL_SHARES` (1e18) and permanently burns `MINIMUM_SHARES` to `address(0)`. `deposit` reverts on an unseeded vault.
-Rules: never read `balanceOf` for accounting (donations must not move share maths); all balances are internal ledgers and PoolManager deltas; treat PoolManager-reported deltas as ground truth, never recompute amounts.
+5. Mint shares. The **first** deposit into a vault uses the dedicated, **curator-only** `seed(vaultId, liquidities, amount0Max, amount1Max, receiver)` entrypoint (see `docs/CONTRACTS.md`; the receiver may be anyone): it mints `INITIAL_SHARES` (1e18) and permanently burns `MINIMUM_SHARES` to `address(0)`. `deposit` reverts on an unseeded vault.
+Rules: never poke or modify a position whose recorded liquidity is zero (v4 is believed to revert; **VERIFY**). Never read `balanceOf` for accounting (donations must not move share maths); all balances are internal ledgers and PoolManager deltas; treat PoolManager-reported deltas as ground truth, never recompute amounts.
 
 **Redeem.** Two steps:
 1. `requestRedeem(vaultId, shares)` moves shares into hook escrow and creates a ticket with `maturity = now + exitNotice`. Escrowed shares still earn and still bear risk.
-2. `claimRedeem(ticketId)` requires `now ≥ maturity` and the lock inactive. It runs `_checkpoint`, then removes `ceil/floor`-correct proportional liquidity from every position (rounded in the vault's favour), adds the proportional idle slice, burns the shares and `take`s tokens to the receiver. `cancelRedeem` returns shares.
+2. `claimRedeem(ticketId, receiver)` is callable by the ticket owner or an approved operator and chooses the receiver at claim time. It evaluates stress first and requires `now ≥ maturity` and the lock inactive. It runs `_checkpoint`, then removes `ceil/floor`-correct proportional liquidity from every position (rounded in the vault's favour), adds the proportional idle slice, burns the shares and `take`s tokens to the receiver. `cancelRedeem` returns shares.
 
 **Re-range (the active management).** `rerange(vaultId, Range[] newRanges)`, curator only, `nonReentrant`:
 - **CALM:** remove all liquidity, re-add into `newRanges` using recovered tokens plus idle, in one `unlock` (flash accounting nets deltas; only the net is settled). After the operation, `committedDepth_v ≥ commitment` must hold or the call reverts. Accrual uses `min(depthBefore, depthAfter)` for the interval so a re-range cannot be gamed.
-- **STRESS/RECOVERING:** additive only. The curator may add new positions or increase liquidity using idle balances. Any operation that reduces liquidity or depth reverts (`StressLockActive`).
+- **STRESS/RECOVERING:** `rerange` reverts (it is CALM-only). Additions during stress go through the separate `deployIdle(vaultId, range, liquidity)`, which uses idle balances only and never reduces liquidity (ADR-017).
 - Tokens that cannot be placed stay in `idle` and are shared pro rata.
 
 **Commitment changes.** Increases apply immediately. Decreases apply after `exitNotice` (`pendingCommitment`).
@@ -347,8 +353,9 @@ Rules: never read `balanceOf` for accounting (donations must not move share math
 ### 6.7 Standby fund and accrual (`RewardMath`)
 - **DECISION D-8:** the standby fee is paid in the pool's **quote** currency, so rewards land directly in the vault's `idle` balance and are shared by shares pro rata, in kind. This removes per-user reward debt and any need to hook ERC-6909 transfers.
 - `fundStandby(amount)`: sponsor deposits quote currency (held as PoolManager claims). `setStandbyRate(rate)`: sponsor only, `rate ≤ maxStandbyRate`. Rate unit: quote-currency wei per collateral wei of eligible depth per second (fixed-point, documented).
-- **Checkpoint.** `_checkpoint(vault)` computes `eligibleDepth = min(lastDepthSample, depthNow, commitment)` (conservative across the interval), limits the interval to `maxAccrualInterval`, computes `reward = eligibleDepth × rate × Δt`, caps it by the fund balance, credits `(1 − curatorFeeBps)` to `idle` and the curator cut to `curatorOwed`, and updates the curator record. Zero reward if in breach.
+- **Checkpoint.** `_checkpoint(vault)` computes `eligibleDepth = min(d_start, d_now, commitment)` where each depth sample is `d = min(anchor-based D_v, that vault's live depth measured from spot)` in every state including STRESS (ADR-025; conservative across the interval), limits the interval to `maxAccrualInterval`, computes `reward = eligibleDepth × rate × Δt`, caps it by the fund balance, credits `(1 − curatorFeeBps)` to `idle` and the curator cut to `curatorOwed`, and updates the curator record. Zero reward if in breach.
 - Every share-changing action checkpoints **before** it changes shares. This is what prevents reward sniping: a new depositor pays proportionally for idle that already includes credited rewards.
+- Sponsor funds are not withdrawable in v1 (ADR-021). The sponsor stops spending by setting the rate to zero and should fund in tranches.
 - If the fund runs dry, accrual stops and `StandbyDepleted` is emitted. The stress lock still holds for an active episode. The depth views simply decay as exits mature. This is intentional and must be documented: the guarantee is "depth plus notice", not forever.
 - **Trading fees** are crystallized the same way: poke each position (`liquidityDelta = 0`), take `feesAccrued`, split the curator cut, add the rest to `idle`. **Lesson from the OpenZeppelin `LiquidityPenaltyHook` audit:** in v4, any liquidity increase auto-collects accrued fees. Never gate behaviour on uncollected fees at removal time.
 
@@ -365,6 +372,8 @@ interface IBallastDepthOracle {
     function vaultStatus(uint256 vaultId) external view returns (uint128 depth, uint128 commitment, bool inBreach);
 }
 ```
+**Consumer guidance:** `liveDepth` is the number lenders should use to size caps; `committedDepth` is for coverage and rewards. `liveDepth` and the pool-wide views iterate vault positions (the whole pool, by G-1); they never scan ticks (ADR-023).
+
 `liveDepth` subtracts, for each vault, the depth fraction represented by tickets maturing within `horizon`. Loops are bounded by `MAX_VAULTS × MAX_POSITIONS`. `SupplyCapAdvisor.suggestedCap(multiplierWad, impactBps, horizon)` returns `multiplier × liveDepth(...)` as a reference only (the Chaos Labs methodology uses a 2× multiplier; make it a parameter).
 
 ### 6.10 Default parameters (testnet/demo; production is a sponsor choice)
@@ -383,7 +392,7 @@ interface IBallastDepthOracle {
 | `maxAccrualInterval` | 1 h | ≥ `observationInterval` |
 | `maxCuratorFeeBps` | 2,000 | ≤ 5,000 |
 | `observationInterval` | 60 s | ≥ 1 s |
-| `observationCardinality` | ≥ `anchorWindow / observationInterval × 1.1` | ≤ 65,535 |
+| `observationCardinality` | recommended `ceil(anchorWindow / observationInterval) × 1.1`; hard minimum `ceil(anchorWindow / observationInterval) + 1` | ≤ 65,535 |
 
 ---
 
@@ -397,13 +406,13 @@ Everything here marked **VERIFY** must be checked against the pinned sources in 
 4. **Position identity.** Owner = the hook, `salt = bytes32(vaultId << 8 | slot)`. Use v4's position-key helper. Read liquidity with the `StateLibrary` helpers (`getSlot0`, `getPositionInfo`/`getPositionLiquidity`, tick info). We also keep our own `Position[]` per vault; add an invariant that the two always agree.
 5. **Rounding.** The PoolManager rounds amounts in the pool's favour: adds round up what the caller pays, removals round down what the caller receives. Our share maths must round in the vault's favour on top of that. Never recompute amounts the PoolManager has already reported.
 6. **Self-calls skip callbacks.** The hook's own `modifyLiquidity` does not trigger its own `before/afterAddLiquidity` (**VERIFY**, §6.2). This is the basis of G-1.
-7. **Hook address.** Hook permissions are encoded in the low bits of the hook's address. Deploy through CREATE2 with `HookMiner` (v4-periphery utility, **VERIFY** path and API). In Foundry scripts use the standard CREATE2 deployer constant from `forge-std`. The deployment script must assert `address(hook)` flags equal `getHookPermissions()`.
-8. **Transient storage.** Build for `evm_version = "cancun"`. Use transient storage for (a) the reentrancy guard and (b) the per-transaction flags `SWAPPED` and `VAULT_OP`. **DECISION D-9:** vault operations and swaps may not share a transaction in either order (`beforeSwap` reverts if `VAULT_OP` is set; vault operations revert if `SWAPPED` is set). This is defence in depth, not a core dependency, and it can break zap-style integrations, so record it in the ADR log and revisit if it hurts. **VERIFY** compiler and chain support for transient storage.
+7. **Hook address.** Hook permissions are encoded in the low bits of the hook's address. Deploy through CREATE2 with our own `HookMiner` in `script/utils` (v4-periphery no longer ships one; ADR-030). In Foundry scripts use the standard CREATE2 deployer constant (`CREATE2_FACTORY` in `forge-std`, code present on chain 1301). The deployment script must assert `address(hook)` flags equal `getHookPermissions()`.
+8. **Transient storage.** Build for `evm_version = "cancun"`. Use transient storage for (a) the reentrancy guard and (b) the per-transaction flags `SWAPPED` and `VAULT_OP`. **DECISION D-9:** vault operations and swaps may not share a transaction in either order (`beforeSwap` reverts if `VAULT_OP` is set; `seed`, `deposit`, `claimRedeem`, `rerange` and `deployIdle` set `VAULT_OP` and revert if `SWAPPED` is set). This is defence in depth, not a core dependency, and it can break zap-style integrations, so record it in the ADR log and revisit if it hurts. **VERIFY** compiler and chain support for transient storage.
 9. **Idle custody (D-10).** Idle balances and the standby fund are held as **PoolManager ERC-6909 claims** (`mint`/`burn`), not ERC-20 balances inside the hook. This keeps idle movements inside flash accounting. The vault **shares** token is the hook's own ERC-6909 (id = vaultId). Do not confuse the two ledgers; name them `shares` and `claims` in code. **VERIFY** whether to inherit v4-core's `ERC6909` or use another audited implementation. Fallback if this proves error-prone: hold idle as ERC-20 in the hook, with an ADR.
 10. **Tokens.** ERC-20 only, no native currency. Fee-on-transfer, rebasing and blocklist tokens are unsupported; document it and add a test that documents the failure mode.
 11. **Tick maths.** Use `TickMath` and `SqrtPriceMath`/`FullMath` from v4-core. Clamp to min/max ticks. Convert bps to ticks conservatively (round toward less depth).
 12. **Network facts (VERIFY; never from memory).** Target chain: Unichain Sepolia (chain ID believed to be 1301). Take the PoolManager, PositionManager, Permit2 and router addresses from the official Uniswap deployments page and record them with source links in `config/addresses.json`. Reconfirm the chain ID and RPC from official Unichain docs.
-13. **Toolchain.** Solidity 0.8.26 (**VERIFY** against v4-core/periphery pragmas), `evm_version = "cancun"`, `via_ir` if stack-too-deep requires it (record why). Dependencies: v4-core, v4-periphery, solady (math, transient reentrancy guard; **VERIFY** names), forge-std, optionally OpenZeppelin `uniswap-hooks`. Pin exact commits and record them in `docs/DECISIONS.md`.
+13. **Toolchain.** Solidity 0.8.26 (**VERIFY** against v4-core/periphery pragmas), `evm_version = "cancun"`, `via_ir` if stack-too-deep requires it (record why). Dependencies: v4-core, OpenZeppelin `uniswap-hooks` (`BaseHook`, `CurrencySettler`; its nested `openzeppelin-contracts` v5.5.0 supplies `SafeERC20`), solady (`lnWad`, `ReentrancyGuardTransient`), forge-std, and v4-periphery for tests only. Exact commits are in the "Pinned dependencies" table of `docs/DECISIONS.md`.
 
 ---
 
@@ -425,16 +434,19 @@ Everything here marked **VERIFY** must be checked against the pinned sources in 
 | T10 | Oracle cold start / sparse swaps | `oracleWarm` flag, exact interpolation, cardinality sizing | Oracle tests |
 | T11 | Sponsor stops funding | Documented; depth views decay honestly; no custody effect | Drought scenario |
 | T12 | Curator mismanagement | Fee cap, visible record; **cannot be prevented**, only disclosed | Docs |
-| T13 | Token transfer failure on payout | Revert whole tx so funds stay in the vault; receiver can be changed at claim time | Failing-token mock |
+| T13 | Token transfer failure on payout | Revert whole tx so funds stay in the vault; receiver is chosen at claim time and can differ on retry | Failing-token mock |
 | T14 | Sequencer timestamp skew | Coarse windows, no sub-minute logic | Parameter bounds |
-| T15 | Wrong hook address bits | Deployment script assertion and test | `DeployBallast` test |
+| T15 | Wrong hook address bits; pool-initialization front-running | Deployment script assertion and test; `initializer`, fee and tickSpacing enforced in `beforeInitialize` | `DeployBallast` test; init-restriction tests |
+| T16 | Swap/vault-operation sandwiching | Same-transaction guards (D-9); share maths independent of price | Guard tests |
+| T17 | Misleading consumers of depth views | `liveDepth` nets exits within a horizon; guidance to use `liveDepth` | Docs, lens tests |
+| T18 | Exit race at crash onset (matured tickets leave before the lock engages) | Accepted in v1; visible through `liveDepth` horizon netting; quantified | `ExitRace` scenario test |
 
 Maintain `docs/THREAT_MODEL.md` with assets, trust boundaries, attacker capabilities, cost estimates for T3/T4 (price manipulation cost versus pool depth) and residual risks. State plainly that the stress lock traps depositors with price risk by design.
 
 ### 8.2 Invariants (each becomes an invariant or fuzz test)
 - **INV-1** Every position in the pool has the hook as owner.
 - **INV-2** For each vault, the sum of our recorded position liquidity equals the PoolManager's position liquidity.
-- **INV-3** Token conservation: for each currency, claims held + tokens implied by all positions == sum of vault idle balances + curator owed + standby fund + positions' principal, up to dust that always favours the vault.
+- **INV-3** Claims solvency, per currency: PoolManager claims held by the hook ≥ Σ vault idle + Σ curatorOwed + standby fund (an inequality, since anyone can transfer claims to the hook). Principal conservation is checked through a ghost ledger of PoolManager-reported deltas, with dust always in the vault's favour.
 - **INV-4** `totalSupply(vaultId)` equals the sum of balances plus escrowed shares plus burned minimum.
 - **INV-5** Rounding never favours the actor: a deposit-then-immediate-redeem round trip never returns more than was paid.
 - **INV-6** No liquidity leaves the pool while the lock is active, except after `maxStressLock` expiry.
@@ -444,7 +456,7 @@ Maintain `docs/THREAT_MODEL.md` with assets, trust boundaries, attacker capabili
 - **INV-10** `liveDepth(i, h₂) ≤ liveDepth(i, h₁)` for `h₂ ≥ h₁`, and `liveDepth ≤` total pool absorbable depth.
 - **INV-11** Observation timestamps strictly increase and `tickCumulative` is consistent with recorded ticks.
 - **INV-12** The stress machine only makes legal transitions; the lock cannot re-arm without an intervening CALM.
-- **INV-13** No privileged address can change custody-relevant state (property check over all external functions: only curator/depositor/self paths move vault funds).
+- **INV-13** No privileged address can change custody-relevant state. This is a static access-control test that enumerates all external selectors and their expected callers, plus an audit item; it is not a runtime invariant.
 - **INV-14** `SWAPPED`/`VAULT_OP` guards: no transaction contains both a swap and a vault operation.
 
 ---
@@ -464,6 +476,7 @@ The test suite is a primary deliverable. A reader skimming `test/` should see a 
    - `Drought.t.sol`: sponsor stops funding; accrual stops; depth views decay as exits mature.
    - `Manipulation.t.sol`: attacker pushes price to try T3/T4/T5/T6; assert the mitigation and record attacker cost.
    - `Control.t.sol`: same liquidity in a plain v4 pool (no hook) versus Ballast under the same shock (feeds §13).
+   - `ExitRace.t.sol`: matured tickets exist at crash onset; quantifies how much matured-ticket liquidity can exit before the lock engages (T18).
 6. **Fork** (`test/fork`): run key flows against the deployed PoolManager on the target chain. Skip cleanly when `RPC_URL` is missing. Pin the fork block.
 7. **Gas** (`test/gas`): budget assertions and `.gas-snapshot`.
 
@@ -576,8 +589,8 @@ If `via_ir` is needed for stack depth, enable it and write why in `docs/DECISION
 ## 12. Deployment and operations
 
 **Scripts** (`script/`), all idempotent and reading `config/addresses.json`:
-1. `DeployBallast.s.sol`: load config, mine a salt with `HookMiner` for the flags from `getHookPermissions()`, deploy the hook with CREATE2, **assert the address flags match**, deploy `BallastLens` and `SupplyCapAdvisor`, write `deployments/<chainId>.json`.
-2. `CreatePool.s.sol`: initialize the pool with the hook, static fee, tick spacing and a starting price.
+1. `DeployBallast.s.sol`: load config, mine a salt with our own `HookMiner` for the flags from `getHookPermissions()`, deploy the hook with CREATE2, **assert the address flags match**, deploy `BallastLens` and `SupplyCapAdvisor`, write `deployments/<chainId>.json`.
+2. Pool initialization (static fee, tick spacing, starting price) happens in the same broadcast as the hook deployment, from the `initializer` account (ADR-014). `CreatePool.s.sol` is used for the control pool.
 3. `SeedVaults.s.sol`: create two curator vaults with different bands/commitments and seed deposits.
 4. `FundStandby.s.sol`: sponsor funds the standby pool and sets the rate.
 5. `RunCrash.s.sol`: executes the scripted swap sequence against the Ballast pool and the control pool.
@@ -674,14 +687,14 @@ Build a thin vertical slice early, then deepen. Each milestone ends with green C
 | ID | Question | Why it matters |
 |---|---|---|
 | Q-1 | Is the name "Ballast" available (GitHub, X, hackathon page)? | Naming clash risk |
-| Q-2 | License for our code (default MIT)? | `LICENSE` and SPDX headers |
-| Q-3 | Confirm target chain (Unichain Sepolia?) and which RPC/explorer to use | Deployment scripts, fork tests |
-| Q-4 | Demo assets: mocks or real testnet tokens? Collateral/quote decimals? | Depth maths and demo realism |
+| Q-2 | License for our code (default MIT)? **Resolved: MIT.** | `LICENSE` and SPDX headers |
+| Q-3 | Confirm target chain (Unichain Sepolia?) and which RPC/explorer to use **Resolved: chain 1301**, RPC and explorer in `config/addresses.json`. | Deployment scripts, fork tests |
+| Q-4 | Demo assets: mocks or real testnet tokens? Collateral/quote decimals? **Resolved: mocks** (decimals still to choose). | Depth maths and demo realism |
 | Q-5 | Pass/fail bar for the crash simulation | Pre-registration (§9.4) |
 | Q-6 | Submission deadline | Decides the cut list |
 | Q-7 | Confirm D-8 (standby fee paid in the quote currency) | Simplifies accounting but fixes the reward token |
-| Q-8 | Curators permissionless, or sponsor-allowlisted for the demo? | Spam/abuse surface and the story |
-| Q-9 | Should deposits be blocked in RECOVERING as well as STRESS? (spec says both) | UX versus safety |
+| Q-8 | Curators permissionless, or sponsor-allowlisted for the demo? **Resolved: permissionless.** | Spam/abuse surface and the story |
+| Q-9 | Should deposits be blocked in RECOVERING as well as STRESS? **Resolved: blocked in both.** | UX versus safety |
 
 ---
 
@@ -695,7 +708,8 @@ Draft versions of these documents exist in `docs/` (plus root `README.md` and `S
 | `docs/CONTRACTS.md` | Public surface: types, functions, access control, events, errors, libraries |
 | `docs/ARCHITECTURE.md` | Diagrams, flows, custody model, storage plan, rationale |
 | `docs/MATH.md` | Formulas, rounding directions, worked example, test tolerances |
-| `docs/THREAT_MODEL.md` | Assets, attackers, threats T1–T17, residual risks, audit checklist |
+| `docs/THREAT_MODEL.md` | Assets, attackers, threats T1–T18, residual risks, audit checklist |
+| `docs/VERIFICATION.md` | Evidence for every VERIFY item (file and line or URL) and its design impact |
 | `docs/TESTING.md` | Test layers, invariants, bars, compliance matrix, gas budgets |
 | `docs/ECONOMICS.md` | Who pays and earns, put-writing framing, pricing framework (no numbers until measured) |
 | `docs/DEPLOYMENT.md` | Config profiles, scripts, smoke tests, manifest, release checklist |

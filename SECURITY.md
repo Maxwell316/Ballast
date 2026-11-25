@@ -13,12 +13,17 @@ Ballast custodies liquidity. Treat it as unaudited software unless an audit repo
 - Depositors accept an **exit notice** and a **bounded stress lock**. The lock traps price risk by design; Ballast does not protect against price losses.
 
 ## Known limitations
+- Dependency-level trust assumption: the PoolManager's owner can set the protocol fee (up to 0.1% per direction in the pinned v4-core). This is not a Ballast privilege and cannot touch custody, but it changes swap costs, so the gross-up helper reads the effective fee from the pool. On Unichain Sepolia the PoolManager owner is an address outside Ballast's control (docs/VERIFICATION.md F-10).
 - Supported tokens: standard ERC-20 only. Fee-on-transfer, rebasing, blocklist and callback tokens are unsupported.
 - Tokens sent to the hook outside the documented functions are not accounted for and cannot be recovered.
 - A cold or very sparse pool has no stress protection until its oracle is warm.
-- A well-capitalized attacker can trigger or delay a lock in a shallow pool (see `docs/THREAT_MODEL.md`, T3 and T4).
+- A well-capitalized attacker can trigger or delay a lock in a shallow pool (see `docs/THREAT_MODEL.md`, T3, T4 and T18).
 - Depth is counted equally anywhere in the band (T5).
 - Standby accrual uses conservative endpoint sampling; intermediate dips are bounded only by `maxAccrualInterval`.
+- Sponsor funds are not withdrawable in v1. The sponsor stops spending by setting the rate to zero and should fund in tranches (ADR-021).
+- Exit race at crash onset (T18): stress detection uses a short TWAP and lags spot, so holders with already matured tickets can exit in the first minutes of a crash before the lock engages. `liveDepth` nets exits maturing inside the consumer's horizon so the exposure is visible.
+- Only the configured `initializer` can initialize the pool, and the fee and tick spacing are fixed in the hook's configuration (ADR-014).
+- Consumers should size caps from `liveDepth`, not `committedDepth`.
 - Demo deployments use compressed time windows. They are not production parameters.
 
 ## Reporting a vulnerability

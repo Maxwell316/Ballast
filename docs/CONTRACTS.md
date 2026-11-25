@@ -1,6 +1,6 @@
 # Ballast Contract Reference
 
-**Status:** Draft v0.1 · The signatures below are the intended public surface. Implementers MAY refine types and packing, but any change to names, access control, units or semantics requires an ADR ([DECISIONS](DECISIONS.md)). Behaviour is defined in [SPEC](SPEC.md); formulas in [MATH](MATH.md).
+**Status:** Draft v0.2 · Where this document and `CLAUDE.md` disagree on behavioural detail, this document and SPEC win (ADR-020). The signatures below are the intended public surface. Implementers MAY refine types and packing, but any change to names, access control, units or semantics requires an ADR ([DECISIONS](DECISIONS.md)). Behaviour is defined in [SPEC](SPEC.md); formulas in [MATH](MATH.md).
 
 ---
 
@@ -12,7 +12,7 @@
 | `BallastLens` | `src/periphery/BallastLens.sol` | Read-only | Depth and status views implementing `IBallastDepthOracle` |
 | `SupplyCapAdvisor` | `src/periphery/SupplyCapAdvisor.sol` | Read-only | Reference conversion of depth into a suggested supply cap |
 
-Inheritance for `BallastHook`: `BaseHook` (v4-periphery), `IBallastHook`, an ERC-6909 implementation for vault shares, `IUnlockCallback` (through the base or directly). **VERIFY** the exact base contract API in the pinned `lib/v4-periphery`.
+Inheritance for `BallastHook`: OpenZeppelin `uniswap-hooks` `BaseHook` (v1.2.1, ADR-030), `IBallastHook`, v4-core's `ERC6909` for vault shares (with our own `totalSupply`), and v4-core's `IUnlockCallback` (the OZ `BaseHook` does not implement it). The PoolManager is the base's `poolManager` immutable; external callbacks are `onlyPoolManager` and dispatch to `_before*`/`_after*`; `_validateHookAddress` runs in the constructor and is not overridable (tests use `deployCodeTo`). `BaseHook`'s `onlyValidPools` is not used: the hook is single-pool and checks the bound `PoolId` itself.
 
 Compiler: Solidity 0.8.26, `evm_version = cancun`. No upgradeability, no owner, no delegatecall, no selfdestruct.
 
@@ -29,6 +29,9 @@ struct Config {
     Currency collateral;
     Currency quote;
     address  sponsor;
+    address  initializer;         // only address allowed to initialize the pool (ADR-014)
+    uint24   fee;                 // static LP fee the pool must use
+    int24    tickSpacing;         // tick spacing the pool must use
     uint16   bandBps;
     uint16   stressEnterBps;
     uint16   stressExitBps;
@@ -63,7 +66,7 @@ struct VaultView {
 
 struct PositionView { int24 tickLower; int24 tickUpper; uint128 liquidity; }
 
-struct TicketView { uint256 vaultId; address owner; address receiver; uint128 shares; uint40 maturity; }
+struct TicketView { uint256 vaultId; address owner; uint128 shares; uint40 maturity; }   // no receiver: chosen at claim (ADR-016)
 
 struct CuratorRecord {
     uint64  coveredSeconds;
@@ -100,8 +103,9 @@ Constants: `MAX_VAULTS = 16`, `MAX_POSITIONS = 8`, `MINIMUM_SHARES = 1e3`, `INIT
 function createVault(Range[] calldata ranges, uint128 commitment, uint16 curatorFeeBps)
     external returns (uint256 vaultId);
 
-/// First deposit for a vault. Curator supplies per-position liquidity; mints INITIAL_SHARES
-/// to `receiver` and burns MINIMUM_SHARES to address(0). Reverts if the vault already has supply.
+/// First deposit for a vault. Curator only (NotCurator otherwise); `receiver` may be any address.
+/// Curator supplies per-position liquidity; mints INITIAL_SHARES to `receiver` and burns
+/// MINIMUM_SHARES to address(0). Reverts if the vault already has supply.
 function seed(
     uint256 vaultId, uint128[] calldata liquidities,
     uint128 amount0Max, uint128 amount1Max, address receiver
@@ -113,12 +117,14 @@ function deposit(
     uint128 amount0Max, uint128 amount1Max, address receiver
 ) external returns (uint128 amount0, uint128 amount1);
 
-function requestRedeem(uint256 vaultId, uint128 shares, address receiver)
+/// Escrows `shares` and creates a ticket owned by msg.sender. The receiver is chosen at claim time.
+function requestRedeem(uint256 vaultId, uint128 shares)
     external returns (uint256 ticketId);
 
 function cancelRedeem(uint256 ticketId) external;
 
-function claimRedeem(uint256 ticketId)
+/// Callable by the ticket owner or an address with isOperator(owner, caller). Evaluates stress first.
+function claimRedeem(uint256 ticketId, address receiver)
     external returns (uint128 amount0, uint128 amount1);
 
 /// Curator only. CALM only. Atomic remove-and-re-add in one unlock.
@@ -137,12 +143,12 @@ function claimCuratorFees(uint256 vaultId, address to) external returns (uint128
 | Function | Access | Allowed states | Same-tx guard | Rounding / notes |
 |---|---|---|---|---|
 | `createVault` | anyone | all | none | Reverts per R-VLT-1 |
-| `seed` | anyone (first depositor, normally the curator) | CALM | `VAULT_OP` | Pays PoolManager deltas rounded up |
+| `seed` | curator only | CALM | `VAULT_OP` | Pays PoolManager deltas rounded up; receiver may be anyone |
 | `deposit` | anyone | CALM | `VAULT_OP` | `ceilDiv` on liquidity and idle slices |
 | `requestRedeem` | share holder | all | none | Escrows shares |
 | `cancelRedeem` | ticket owner | all | none | Returns shares |
-| `claimRedeem` | ticket owner or approved | CALM or lock expired | `VAULT_OP` | `floorDiv` on liquidity and idle slices |
-| `rerange` | curator | CALM | `VAULT_OP` | Coverage check after; accrual uses min(before, after) |
+| `claimRedeem` | ticket owner or operator | CALM or lock expired (stress evaluated first) | `VAULT_OP` | `floorDiv` on liquidity and idle slices; receiver given at claim |
+| `rerange` | curator | CALM only (additions in stress use `deployIdle`) | `VAULT_OP` | Coverage check after; accrual uses min(before, after) |
 | `deployIdle` | curator | all | `VAULT_OP` | Idle only |
 | `setCommitment` | curator | all | none | Pending decrease |
 | `claimCuratorFees` | curator | all | none | Pays `curatorOwed` only |
@@ -184,7 +190,7 @@ function twapTick(uint32 window) external view returns (int24 tick, bool warm);
 
 ### 3.5 Shares (ERC-6909 surface)
 
-`balanceOf(owner, vaultId)`, `allowance`, `isOperator`, `transfer`, `transferFrom`, `approve`, `setOperator`, `totalSupply(vaultId)`. Escrowed shares are held by the hook and are not transferable by their former owner. **VERIFY** whether to inherit v4-core's ERC-6909 or another implementation, and whether `totalSupply` needs a custom extension.
+`balanceOf(owner, vaultId)`, `allowance`, `isOperator`, `transfer`, `transferFrom`, `approve`, `setOperator`, `totalSupply(vaultId)`. Escrowed shares are held by the hook and are not transferable by their former owner. If the inherited ERC-6909 lacks `totalSupply`, the hook tracks it in overridden mint and burn paths (ADR-024). **VERIFY** the base implementation (see VERIFICATION.md).
 
 ### 3.6 Hook callbacks
 
@@ -192,7 +198,8 @@ function twapTick(uint32 window) external view returns (int24 tick, bool warm);
 function getHookPermissions() public pure override returns (Hooks.Permissions memory);
 // beforeInitialize, afterInitialize, beforeAddLiquidity, beforeRemoveLiquidity, beforeSwap: true. All else false.
 
-function _beforeInitialize(address, PoolKey calldata key, uint160 sqrtPriceX96) internal override returns (bytes4);
+function _beforeInitialize(address sender, PoolKey calldata key, uint160 sqrtPriceX96) internal override returns (bytes4);
+// reverts PoolInitializerOnly(sender) unless sender == config.initializer; InvalidPoolKey unless fee and tickSpacing match config
 function _afterInitialize(address, PoolKey calldata, uint160, int24 tick) internal override returns (bytes4);
 function _beforeAddLiquidity(address, PoolKey calldata, ModifyLiquidityParams calldata, bytes calldata) internal pure override returns (bytes4); // always reverts
 function _beforeRemoveLiquidity(address, PoolKey calldata, ModifyLiquidityParams calldata, bytes calldata) internal pure override returns (bytes4); // always reverts
@@ -246,6 +253,7 @@ event StandbyDepleted();
 
 ```solidity
 error NotPoolManager();            error NotCurator(address caller);       error NotSponsor(address caller);
+error PoolInitializerOnly(address caller);
 error PoolAlreadyBound();          error InvalidPoolKey();                 error DynamicFeeUnsupported();
 error NativeCurrencyUnsupported(); error InvalidConfig();                  error ExternalLiquidityForbidden();
 error TooManyVaults();             error TooManyPositions();               error InvalidRange(int24 lower, int24 upper);
@@ -253,7 +261,7 @@ error DuplicateRange();            error VaultNotSeeded();                 error
 error StressLockActive(uint40 until);                                      error NotCalm();
 error SwapInSameTransaction();     error VaultOpInSameTransaction();       error Reentrancy();
 error CoverageBelowCommitment(uint128 depth, uint128 commitment);
-error TicketNotMature(uint40 maturity);                                    error NotTicketOwner();
+error TicketNotMature(uint40 maturity);                                    error NotTicketOwnerOrOperator();
 error SlippageExceeded();          error ZeroShares();                     error InsufficientIdle();
 error StandbyRateTooHigh();        error GraceNotExpired(uint40 until);    error VaultNotInBreach();
 ```
@@ -272,11 +280,13 @@ interface IBallastDepthOracle {
 }
 ```
 
-`BallastLens(IBallastHook hook)` is stateless apart from the hook address. It reads vault, position and ticket data through the hook's views and the PoolManager through `StateLibrary`, and computes depth with `DepthMath`. All loops are bounded (§R-VIEW-4). It exposes two extra views:
+**Consumer guidance:** `liveDepth` is the figure lending risk models should use to size caps. `committedDepth` is for coverage and reward accounting; it is anchor-based and does not net exits or measure from spot.
+
+`BallastLens(IBallastHook hook)` is stateless apart from the hook address. It reads vault, position and ticket data through the hook's views and the PoolManager through `StateLibrary`, and computes depth with `DepthMath`. All loops are bounded (R-VIEW-4). `liveDepth` and `poolAbsorbable` iterate vault positions, which is the whole pool by G-1; they never scan ticks (ADR-023). It exposes two extra views:
 
 ```solidity
 function vaultDepth(uint256 vaultId) external view returns (uint256 committed);          // anchor band, this vault
-function poolAbsorbable(uint16 impactBps) external view returns (uint256 collateralAmount); // spot band, all liquidity, no exit netting
+function poolAbsorbable(uint16 impactBps) external view returns (uint256 collateralAmount); // spot band, all vault positions, no exit netting
 ```
 
 ## 6. `SupplyCapAdvisor`
@@ -295,12 +305,22 @@ Reference only. It demonstrates how a risk module could size a cap from committe
 
 ```solidity
 library Observations {
-    struct Observation { uint32 timestamp; int56 tickCumulative; bool initialized; }
-    struct State { uint16 index; uint16 cardinality; }
-    function initialize(Observation[] storage self, uint32 time, int24 tick) internal;
-    function write(Observation[] storage self, State storage s, uint32 time, int24 preSwapTick, uint32 minInterval) internal returns (bool wrote);
-    function cumulativeAt(Observation[] storage self, State storage s, uint32 nowTs, uint32 secondsAgo, int24 currentTick) internal view returns (int56 cumulative, bool warm);
-    function twapTick(Observation[] storage self, State storage s, uint32 nowTs, uint32 window, int24 currentTick) internal view returns (int24 tick, bool warm);
+    // Snapshot of the running accumulator, taken at most once per observationInterval.
+    struct Observation { uint40 timestamp; int56 tickCumulative; bool initialized; }
+    // Running accumulator: updated on every swap with a new timestamp (ADR-013).
+    struct State {
+        uint16 index; uint16 cardinality;
+        uint40 lastSwapTs; int24 lastTick; int56 cumulative; uint40 lastSnapshotTs;
+    }
+    function initialize(Observation[] storage self, State storage s, uint40 time, int24 tick) internal;
+    /// Accumulates preSwapTick x (now - lastSwapTs) if now != lastSwapTs; appends a snapshot if
+    /// now - lastSnapshotTs >= minInterval. Returns whether a snapshot was written.
+    function update(Observation[] storage self, State storage s, uint40 nowTs, int24 preSwapTick, uint32 minInterval) internal returns (bool snapshotted);
+    /// Exact: cumulative + currentTick x (nowTs - lastSwapTs).
+    function cumulativeNow(State storage s, uint40 nowTs, int24 currentTick) internal view returns (int56);
+    /// Exact at snapshot times; linear interpolation between snapshots (error bound: MATH §4).
+    function cumulativeAt(Observation[] storage self, State storage s, uint40 nowTs, uint32 secondsAgo, int24 currentTick) internal view returns (int56 cumulative, bool warm);
+    function twapTick(Observation[] storage self, State storage s, uint40 nowTs, uint32 window, int24 currentTick) internal view returns (int24 tick, bool warm);
 }
 
 library BandMath {
@@ -315,7 +335,9 @@ library DepthMath {
 }
 
 library StressMachine {
-    struct Ctx { uint32 nowTs; uint32 stressStartedAt; uint32 belowExitSince; uint32 enterTicks; uint32 exitTicks; uint32 calmDuration; uint32 maxStressLock; bool rearmBlocked; }
+    // Absolute times are uint40, durations and tick thresholds are uint32 (ADR-024).
+    struct Ctx { uint40 nowTs; uint40 stressStartedAt; uint40 belowExitSince; uint32 enterTicks; uint32 exitTicks; uint32 calmDuration; uint32 maxStressLock; bool rearmBlocked; }
+    // stressStartedAt changes only on CALM -> STRESS (ADR-019). Pure; views call it as a preview.
     function next(LockState s, int256 dev, Ctx memory c) internal pure returns (LockState ns, Ctx memory nc, bool emittedLockExpiry);
     function lockActive(LockState s, Ctx memory c) internal pure returns (bool);
 }
@@ -337,16 +359,17 @@ library RewardMath {
 
 | Function group | Anyone | Curator | Sponsor | Share holder | PoolManager |
 |---|---|---|---|---|---|
-| `createVault`, `seed`, `deposit` | ✔ | ✔ | ✔ | ✔ | |
-| `rerange`, `deployIdle`, `setCommitment`, `claimCuratorFees` | | ✔ (own vault) | | | |
+| `createVault`, `deposit` | ✔ | ✔ | ✔ | ✔ | |
+| `seed`, `rerange`, `deployIdle`, `setCommitment`, `claimCuratorFees` | | ✔ (own vault) | | | |
 | `fundStandby`, `setStandbyRate` | | | ✔ | | |
-| `requestRedeem`, `cancelRedeem`, `claimRedeem` | | | | ✔ (own tickets) | |
+| `requestRedeem`, `cancelRedeem` | | | | ✔ (own shares and tickets) | |
+| `claimRedeem` | | | | ✔ (ticket owner or operator) | |
 | `checkpoint`, `flagBreach`, `pokeStress` | ✔ | ✔ | ✔ | ✔ | |
 | `unlockCallback` and hook callbacks | | | | | ✔ |
 
 ## 9. Storage layout plan
 
-Document the final layout in `ARCHITECTURE.md` §7. Rules: pack `Vault` into at most four slots; keep hot per-swap state (`lastObservationTs`, `lastTick`, `stressState`, `stressStartedAt`, `belowExitSince`, `rearmBlocked`) in one slot; immutables for all `Config` fields; no dynamic arrays except observations, vault ranges (bounded) and tickets (append-only mapping keyed by id).
+Document the final layout in `ARCHITECTURE.md` §7. Rules: pack `Vault` into at most four slots; keep hot per-swap state (`lastSwapTs`, `lastTick`, `cumulative`, `lastSnapshotTs`, `stressState`, `stressStartedAt`, `belowExitSince`, `rearmBlocked`) in one slot; immutables for all `Config` fields; no dynamic arrays except observations, vault ranges (bounded) and tickets (append-only mapping keyed by id).
 
 ## 10. Gas notes
 

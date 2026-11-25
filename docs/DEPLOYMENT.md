@@ -45,12 +45,13 @@ forge script script/DeployBallast.s.sol --rpc-url http://127.0.0.1:8545 --broadc
 1. **Mock assets (if chosen).** Deploy mock collateral and quote ERC-20s and a simple router (Q-4). Record addresses.
 2. **Deploy the hook** with `DeployBallast.s.sol`:
    - Compute flags from `getHookPermissions()` using the `Hooks.*_FLAG` constants.
-   - Mine a salt with `HookMiner` using the constructor arguments (PoolManager, `Config`).
+   - Mine a salt with our own `HookMiner` (`script/utils`) using the constructor arguments (PoolManager, `Config`).
    - Deploy through the CREATE2 deployer (the standard constant from `forge-std`).
    - **Assert** the deployed address's permission bits equal the intended flags.
    - Deploy `BallastLens` and `SupplyCapAdvisor`.
+   - Initialize the pool from the `initializer` account (same broadcast).
    - Write `deployments/<chainId>.json`.
-3. **Create the pool** with `CreatePool.s.sol` (hook address, static fee, tick spacing, starting price).
+3. **Initialize the pool in the same broadcast as the deployment.** `config.initializer` is the only address allowed to initialize, and `config.fee` and `config.tickSpacing` must match the pool key (ADR-014). `CreatePool.s.sol` is reused for the control pool.
 4. **Seed vaults** with `SeedVaults.s.sol` (two curators with different bands and commitments).
 5. **Fund standby** with `FundStandby.s.sol` (sponsor approves and funds quote currency; sets the rate within bounds).
 6. **Verify** every contract (`forge verify-contract` or `verify.sh`).
@@ -67,6 +68,7 @@ forge script script/DeployBallast.s.sol --rpc-url http://127.0.0.1:8545 --broadc
 | Swap in both directions | Succeeds; `beforeSwap` writes observation after the interval |
 | `requestRedeem` and `claimRedeem` before maturity | Claim reverts `TicketNotMature` |
 | `lockState()` | `CALM`, `oracleWarm` reported correctly |
+| Non-initializer `initialize` | Reverts `PoolInitializerOnly` |
 | `committedDepth()` | Matches an off-chain computation from vault positions |
 | Hook address flags | Equal `getHookPermissions()` |
 

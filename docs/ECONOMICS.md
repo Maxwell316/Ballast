@@ -66,6 +66,9 @@ benefit  ≈  value(Δ cap)  or  value(reduction in expected bad debt and liquid
 ```
 We do not assert that Ballast is cheaper than emissions. It buys a different thing: committed, bounded-exit depth in the specific band that matters. Whether that is worth the price is a sponsor decision.
 
+### Funding mechanics and limitation
+Sponsor funds are **not withdrawable** in v1 (ADR-021). A sponsor stops spending by setting the rate to zero, and should fund in tranches sized to the horizon it is willing to pay for. Over-funded amounts stay in the standby fund. Standby pays only for depth still available: eligible depth is the minimum of anchor-based committed depth, the vault's live depth from spot and the commitment, so rewards fall as a crash consumes liquidity.
+
 ## 6. Curators
 
 - Earn `curatorFeeBps` (capped) on crystallized trading fees and standby rewards, never on principal.

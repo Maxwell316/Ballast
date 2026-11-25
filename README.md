@@ -18,7 +18,7 @@ Lending risk teams size collateral supply caps from DEX depth. The public method
 2. **Curator vaults.** Curators choose ranges and a depth commitment. Depositors hold proportional, in-kind vault shares (no price oracle in share accounting).
 3. **Notice and stress lock.** Exits go through a notice queue. When the pool's short-term TWAP falls sharply versus its own anchor TWAP, the queue freezes until calm or a hard maximum lock elapses. The lock cannot re-arm until the market has been calm.
 4. **Standby fee.** A sponsor funds a per-second standby fee paid to vaults on verified, conservatively sampled committed depth.
-5. **Depth views.** `committedDepth`, `liveDepth(impactBps, horizon)` and `lockState` let risk consumers read guaranteed depth, net of exits maturing inside their horizon.
+5. **Depth views.** `committedDepth`, `liveDepth(impactBps, horizon)` and `lockState` let risk consumers read guaranteed depth, net of exits maturing inside their horizon. **Lenders should size caps from `liveDepth`.** `committedDepth` is anchor-based and exists for coverage and reward accounting.
 
 Ballast does **not** protect depositors from price losses. The lock holds risk in place on purpose, and depositors are paid a standby fee for bearing it.
 
@@ -59,8 +59,8 @@ Simulation results versus an ordinary pool are generated from `analysis/results/
 
 ## Known limitations
 
-Standard ERC-20 tokens only; a cold or sparse pool has no stress protection; sustained manipulation in a shallow pool can trigger or delay a lock; depth is counted equally anywhere in the band; standby sampling is conservative at interval endpoints only. Full list: [SECURITY.md](SECURITY.md) and [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md).
+Standard ERC-20 tokens only; a cold or sparse pool has no stress protection; sustained manipulation in a shallow pool can trigger or delay a lock; depth is counted equally anywhere in the band; standby sampling is conservative at interval endpoints only; holders with already matured exit tickets can leave before the lock engages at crash onset; sponsor funds are not withdrawable in v1. Full list: [SECURITY.md](SECURITY.md) and [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md).
 
 ## License
 
-MIT (to be confirmed).
+MIT. See [LICENSE](LICENSE).

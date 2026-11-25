@@ -41,22 +41,22 @@ test/
 | `BandMath` | `bpsToTicksDown` monotonic; within 1 tick of reference; edges ordered correctly for both collateral directions |
 | `RewardMath` | Exact floor against a 512-bit reference; never exceeds `eligible · interval · rate / scale` |
 | `StressMachine` | Only legal transitions; hysteresis; lock cannot re-arm before CALM; expiry at `maxStressLock` |
-| `Observations` | Cumulative consistent with recorded ticks; interpolation exact; TWAP rounding toward −∞ |
+| `Observations` | Running accumulator exact at every swap and at snapshot times; interpolation exact when no swap lies between snapshots, and within `observationInterval × Δτ_max / window` otherwise (MATH §4), with adversarial intra-interval swap patterns; TWAP rounding toward −∞; warm iff the anchor window is covered |
 
 ### 3.3 Differential
 - **Depth vs swaps:** build a pool with known liquidity; swap collateral in increasing steps until price reaches the band edge; the measured input net of fee MUST be ≥ `DepthMath` output and within the documented rounding bound.
-- **Oracle vs model:** a naive Solidity model recomputes TWAP from the full tick history.
+- **Oracle vs model:** a naive Solidity model recomputes TWAP from the full tick history, including swaps that fall between snapshots; the error bound of MATH §4 is asserted.
 - **Stress vs table:** a table-driven reference of `(state, dev, time) → (state)`.
 
 ### 3.4 Invariant
 Handler-based. Actors: three curators, five depositors, one sponsor, one trader, one time-warper.
 
 Handler actions (each bounded and guarded to avoid trivially reverting calls):
-`createVault`, `seed`, `deposit`, `requestRedeem`, `cancelRedeem`, `claimRedeem`, `rerange` (calm), `deployIdle`, `setCommitment`, `checkpoint`, `flagBreach`, `pokeStress`, `fundStandby`, `setStandbyRate`, `swapCollateralIn`, `swapQuoteIn` (various sizes), `warp`.
+`createVault`, `seed` (curator), `deposit`, `requestRedeem`, `cancelRedeem`, `claimRedeem` (owner and operator, arbitrary receiver), `rerange` (calm), `deployIdle`, `setCommitment`, `checkpoint`, `flagBreach`, `pokeStress`, `fundStandby`, `setStandbyRate`, `swapCollateralIn`, `swapQuoteIn` (various sizes), `warp`.
 
 Ghost variables: total deposited and withdrawn per currency, total credited rewards, total funded, per-vault shares, number of lock violations (must stay zero), observed state transitions.
 
-Invariants implemented: INV-1 … INV-14 (see CLAUDE.md §8.2). Use `fail_on_revert = false`, and assert in handlers that expected reverts are the expected errors.
+Invariants implemented: INV-1 … INV-12 and INV-14 (see CLAUDE.md §8.2). INV-3 is the inequality form (claims held ≥ Σ idle + curatorOwed + standby fund, per currency) plus a ghost ledger of PoolManager-reported deltas for principal, with dust always in the vault's favour. INV-13 is **not** a runtime invariant: it is a static access-control test that enumerates every external selector of the hook and asserts the expected callers (§3.7). Use `fail_on_revert = false`, and assert in handlers that expected reverts are the expected errors.
 
 ### 3.5 Scenario
 | Test | Narrative | Asserts |
@@ -66,9 +66,13 @@ Invariants implemented: INV-1 … INV-14 (see CLAUDE.md §8.2). Use `fail_on_rev
 | `Drought` | Sponsor stops funding | Accrual stops; `StandbyDepleted` once; depth views decay as exits mature |
 | `Manipulation` | Attacker tries T3, T4, T5, T6 | Mitigations hold; attacker cost recorded |
 | `Control` | Same liquidity in a plain pool vs Ballast under the same shock | Metrics feed SIMULATION |
+| `ExitRace` | Matured tickets exist when a crash begins; holders claim as early as the machine allows | Quantifies matured-ticket liquidity that exits before the lock engages, for stated parameters (T18); no claim after the lock engages |
+
+### 3.7 Static access control (INV-13)
+A test enumerates every external and public selector of `BallastHook` (from the ABI) and maps each to its expected caller class (anyone, curator, sponsor, ticket owner or operator, PoolManager). For each selector it calls from every other class and asserts the revert. A new selector without an entry fails the test. This is also an audit checklist item.
 
 ### 3.6 Fork
-Run key flows on the target chain's PoolManager at a pinned block. Skip with a clear message if `RPC_URL` is unset. Purpose: catch deployment-specific differences (hook flag bit order, token behaviour, PositionManager interaction).
+Run key flows on the target chain's PoolManager at a pinned block. Skip with a clear message if `RPC_URL` is unset. Purpose: catch deployment-specific differences (hook flag bit order, token behaviour, PositionManager interaction). `test/fork/HooksOnChain.t.sol` is the first fork test: a test hook carrying Ballast's five flags is placed with `deployCodeTo` on a fork of the Unichain Sepolia PoolManager and shows every callback firing, external liquidity changes blocked while the hook's own succeed, and claims-based settlement (docs/VERIFICATION.md F-3). Run: `RPC_URL=https://sepolia.unichain.org forge test --match-contract HooksOnChainTest`.
 
 ## 4. Bars
 
@@ -116,17 +120,17 @@ Targets (measure, record in `.gas-snapshot`, justify regressions above 5%):
 
 | Area | Must-have tests |
 |---|---|
-| Pool binding | first pool binds; second reverts; dynamic fee reverts; native reverts; wrong currencies revert |
+| Pool binding | first pool binds; second reverts; non-initializer reverts `PoolInitializerOnly`; fee or tickSpacing mismatch reverts; dynamic fee reverts; native reverts; wrong currencies revert |
 | Liquidity ownership | PositionManager add/remove revert; router add/remove revert; hook self-call works |
-| Oracle | exact TWAP across sparse swaps; same-block double swap writes once; cold start warm flag |
-| Stress | enter, recover, exit, relapse; lock expiry; no re-arm; cold pool stays CALM |
-| Vaults | create/seed/deposit/redeem round trip; notice enforcement; lock blocks claim; cancel returns shares |
+| Oracle | accumulator exact across sparse swaps; swaps inside one snapshot interval stay exact in the accumulator; same-block double swap accumulates once; interpolation error within the MATH §4 bound; cold start warm flag (anchor window) |
+| Stress | enter, recover, exit, relapse; relapse does not reset `stressStartedAt`; lock expiry; no re-arm; cold pool stays CALM; `claimRedeem` releases an expired lock without a poke; view preview equals executed transition |
+| Vaults | create/seed/deposit/redeem round trip; seed by non-curator reverts, receiver may differ; notice enforcement; lock blocks claim; claim by owner and by operator to any receiver; non-owner reverts; cancel returns shares; no poke of a zero-liquidity position |
 | Re-range | calm success; coverage failure reverts; stress reverts; idle remainder preserved |
-| Standby | accrual; fund cap; breach stops; depletion event once; sniping unprofitable |
+| Standby | accrual; fund cap; breach stops; reward shrinks as a crash consumes liquidity (`Λ_v`); depletion event once; sniping unprofitable |
 | Fees | crystallization separates `feesAccrued`; curator cut on fees and rewards only |
 | Views | committed vs live depth; horizon netting; lock-aware netting; bounded gas |
-| Guards | swap then vault op reverts; vault op then swap reverts; reentrancy attacker fails |
-| Deployment | address flags equal permissions; script idempotent |
+| Guards | swap then vault op reverts and vault op then swap reverts, for each of seed, deposit, claimRedeem, rerange and deployIdle; reentrancy attacker fails |
+| Deployment | address flags equal permissions; hook deployed and pool initialized in one broadcast; script idempotent |
 
 ## 9. CI pipeline
 

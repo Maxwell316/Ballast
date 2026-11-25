@@ -26,6 +26,7 @@ Under the same liquidity, the same price shock and the same liquidation-sized se
 | S3 | Whipsaw | Rapid down-up moves that cross thresholds repeatedly | Hysteresis, no re-arm, lock expiry |
 | S4 | Manipulation | Attacker pushes price to try T3/T4/T5/T6 | Mitigation effectiveness, attacker cost |
 | S5 | Drought | Sponsor stops funding; exits mature | Depth-view decay, `StandbyDepleted` once |
+| S6 | Exit race | Matured tickets exist when a crash begins; holders claim as early as the machine allows (T18) | Matured-ticket liquidity that exits before the lock engages |
 
 For each scenario, the price path, swap sizes, durations and actor behaviour are fixed in the pre-registration (§5).
 

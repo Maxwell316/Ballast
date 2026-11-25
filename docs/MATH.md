@@ -1,6 +1,6 @@
 # Ballast Mathematics
 
-**Status:** Draft v0.1 · Companion to [SPEC](SPEC.md). Every formula that appears in code must appear here with its rounding direction and a justification. Numerical examples are illustrative; implementers must recompute them in tests.
+**Status:** Draft v0.2 · Companion to [SPEC](SPEC.md). Every formula that appears in code must appear here with its rounding direction and a justification. Numerical examples are illustrative; implementers must recompute them in tests.
 
 ---
 
@@ -40,7 +40,17 @@ For a position with liquidity `L` over `[√Pl, √Ph]` (square-root prices, `Pl
   Δy = L · (√Ph − √Pl)             // = SqrtPriceMath.getAmount1Delta(√Pl, √Ph, L, roundUp=false)
   ```
 
-These are amounts net of swap fees. The gross input needed is `amount / (1 − fee)`; we report net amounts (conservative) and expose a helper for gross-up.
+These are amounts net of swap fees. We report net amounts to consumers (conservative) and expose a helper for gross-up that uses the **effective swap fee** (ADR-031).
+
+**Effective swap fee (verified in `lib/v4-core/src/libraries/ProtocolFeeLibrary.sol:38-46` and `Pool.sol:286-307`).** Fees are in pips (1e-6). The pool's `slot0` holds `lpFee` and a 24-bit `protocolFee` packed as two 12-bit directional halves: `zeroForOne` uses the low 12 bits, `oneForZero` the high 12 bits (`getZeroForOneFee`, `getOneForZeroFee`). Each half is at most `MAX_PROTOCOL_FEE = 1000` pips (0.1%). For a swap with directional protocol fee `p` and LP fee `l`, v4 uses
+```
+swapFee = p + l − floor(p · l / 1_000_000)        // = 1 − (1−p)(1−l) up to the floor; protocol fee comes off the input first
+```
+(when `p == 0` it is just `l`). The liquidation direction is `zeroForOne` iff the collateral is currency0, so the helper selects the directional half accordingly. Gross input to push `net` collateral through the band:
+```
+gross = ceil( net · 1_000_000 / (1_000_000 − swapFee) )        // rounded up: an upper bound on what a seller must pay
+```
+`slot0.lpFee` and `protocolFee` are read from the PoolManager (`StateLibrary.getSlot0`), never assumed from config, because the PoolManager's owner can change the protocol fee (SECURITY, THREAT_MODEL). The depth numbers published by the lens stay **net of fees**; only the optional gross-up helper uses the effective fee.
 
 **Band overlap.** With anchor tick `A` and band length `B = bpsToTicksDown(bandBps)`:
 
@@ -65,6 +75,8 @@ Let `t_s` be the current tick and `√P_s` the current sqrt price. For an impact
 
 Positions entirely behind the current price (already converted) contribute zero. Positions straddling the price contribute only the part between spot and the far edge.
 
+**Implementation (ADR-023).** Because of G-1 every unit of pool liquidity belongs to some vault position, so pool-wide figures are sums over `MAX_VAULTS × MAX_POSITIONS` positions. No tick scan is performed.
+
 ### 3.3 Netting maturing exits
 For vault `v` and horizon `h`, let `E_v(h)` be shares in tickets whose effective exit time `max(maturity, lockedUntil) ≤ now + h` and `S_v` total shares (including escrow and burned minimum). Then
 ```
@@ -76,12 +88,20 @@ Because `lockedUntil` is included in the effective exit time, a ticket that matu
 
 Observation: `(t_k, C_k)` with `C_k = Σ tick_j · Δt_j`. Between swaps the tick is constant, so `C` is exact.
 
-- **Write at swap time.** With last observation `(t_w, C_w)` and pre-swap tick `τ`: `C_new = C_w + τ · (now − t_w)`.
-- **Query.** For target time `t*` between observations `k` and `k+1`: linear interpolation of `C`. For `t*` after the last observation: `C(t*) = C_w + τ_now · (t* − t_w)` using the current tick from the PoolManager.
+- **Running accumulator (ADR-013).** State `(t_s, τ_s, C)`: time of the last accumulator update, the pre-swap tick read then, and the cumulative at `t_s`. At the start of every `beforeSwap` with `now ≠ t_s`, with `τ` the pre-swap `slot0.tick`: `C ← C + τ · (now − t_s)`, `t_s ← now`, `τ_s ← τ`. The accumulator is never skipped, so `C` is exact at every update time.
+- **Snapshots.** At most once per `observationInterval`, `(now, C)` is appended to the ring buffer. Every snapshot value is exact.
+- **Exact current value.** `C(now) = C + τ_now · (now − t_s)` with `τ_now` the PoolManager's current tick. This is exact because the tick has not changed since the last swap.
+- **Query at `t* < now`.** If `t*` is a snapshot time the value is exact. Otherwise linearly interpolate between the bracketing snapshots `(t_a, C_a)` and `(t_b, C_b)`. For `t* ≥` the newest snapshot the bracket is `(t_snap, C_snap)` and `(t_s, C)` when `t_s > t_snap`, else the exact extension above.
 - **TWAP over window `W`:** `(C(now) − C(now − W)) / W`, rounded toward negative infinity (if the difference is negative and not divisible, subtract one).
-- **Warmth:** if no observation exists at or before `now − W`, use the oldest and report `warm = false`.
+- **Warmth.** `warm_W` holds iff the oldest retained snapshot has timestamp `≤ now − W`. The stress machine requires `warm_anchorWindow`, which implies the short window is covered. Otherwise the oldest snapshot is used and `warm = false`.
 
-Why pre-swap tick: the tick in effect during `[t_w, now]` is the one left by the previous swap, which is what `slot0` shows at the start of the next swap. Writing at most once per timestamp means a swap and its reversal in one block carry zero weight.
+**Interpolation error bound.** Interpolation is exact whenever no swap occurred between the two bracketing snapshots, because the tick is then constant and `C` is linear. Snapshots are written at swap times with spacing at least `I = observationInterval`. Any swap that fell between two consecutive snapshots `t_a < t_b` must lie in `[t_a, t_a + I)`: a later swap would itself have satisfied the spacing rule and been snapshotted, and a swap at or after `t_a + I` is `t_b`. On `[t_a + I, t_b]` the tick is constant, so the non-linear part is confined to an interval of length less than `I`. Let `Δτ` be the maximum tick swing during that interval. Then `|C_interp(t*) − C(t*)| ≤ I · Δτ`, and since only the window-start term is interpolated (the end term is exact):
+```
+|TWAP_computed − TWAP_true| ≤ I · Δτ_max / W        (before the floor rounding of 1 tick)
+```
+Example (illustrative, not measured): `I = 60 s`, `W = 900 s`, `Δτ_max = 300` ticks gives at most 20 ticks. The bound shrinks with longer windows and shorter intervals; `Observations` tests MUST confirm it against a full-history reference model with adversarial swap patterns inside one interval.
+
+Why pre-swap tick: the tick in effect during `[t_s, now]` is the one left by the previous swap, which is what `slot0` shows at the start of the next swap. Updating once per timestamp means a swap and its reversal in one block carry zero weight.
 
 ## 5. Stress deviation
 ```
@@ -109,6 +129,14 @@ eligible  = min(depthStart, depthNow, K_v)               // conservative at the 
 reward    = floor( mulDiv(eligible · interval, rate, RATE_SCALE) )   // 512-bit intermediate
 reward    = min(reward, fundBalance)
 ```
+**Depth sample (amended, ADR-025).** The sample at a checkpoint is
+```
+d = min( D_v , Λ_v )
+D_v = anchor-based committed depth of vault v (§3.1)
+Λ_v = the vault's live absorbable collateral measured from current spot over bandBps of price impact (§3.2 applied to this vault, no exit netting)
+eligible = min(d_start, d_now, K_v)
+```
+This holds in every state, including STRESS and RECOVERING, so standby pays only for depth that is still available: once a crash has consumed the vault's liquidity, `Λ_v` falls and so does the reward. Λ_v uses the same rounding-down rules as §3.2.
 - `eligible · interval < 2^128 · 2^32 = 2^160`; multiplied by `rate < 2^128` this exceeds 2^256, so use `FullMath.mulDiv`.
 - Units: `rate` is quote-token raw units per collateral-token raw unit per second, scaled by `RATE_SCALE`. Document decimals in `ECONOMICS.md`.
 - **Limit of the sampling argument.** Taking the minimum of the interval's endpoints does not bound the depth path in between if the anchor drifts non-monotonically. The error is bounded by `maxAccrualInterval × rate × (max variation of D_v over the interval)`. Mitigations: small `maxAccrualInterval`, permissionless `checkpoint`, and re-range accrual using `min(before, after)`.

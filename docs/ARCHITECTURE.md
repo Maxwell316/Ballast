@@ -89,7 +89,7 @@ sequenceDiagram
     PM->>H: beforeSwap(...)
     H->>H: VAULT_OP set? revert. Set SWAPPED.
     H->>PM: read slot0 tick (pre-swap)
-    H->>H: write observation (if interval elapsed)
+    H->>H: accumulate cumulative (if timestamp changed); snapshot if interval elapsed
     H->>H: evaluate stress (once per interval): twaps -> StressMachine.next
     H-->>PM: selector, zero delta, zero fee override
     PM->>PM: execute swap
@@ -131,11 +131,11 @@ sequenceDiagram
 sequenceDiagram
     participant U as Share holder
     participant H as BallastHook
-    U->>H: requestRedeem(vaultId, shares, receiver)
+    U->>H: requestRedeem(vaultId, shares)
     H->>H: escrow shares, ticket.maturity = now + exitNotice
     Note over U,H: shares keep earning and keep bearing risk
-    U->>H: claimRedeem(ticketId) after maturity
-    H->>H: lock active? revert StressLockActive(until)
+    U->>H: claimRedeem(ticketId, receiver) after maturity (owner or operator)
+    H->>H: evaluate stress; lock active? revert StressLockActive(until)
     H->>H: checkpoint, then remove floor(L_i*shares/supply), floor idle slice
     H-->>U: take tokens to receiver
 ```
@@ -173,7 +173,7 @@ stateDiagram-v2
     STRESS --> STRESS: lock expires at maxStressLock (no re-arm until CALM)
 ```
 
-Lock timeline: `stressStartedAt` is set when CALM → STRESS. The lock is active until `stressStartedAt + maxStressLock` or until the state returns to CALM, whichever comes first.
+Lock timeline: `stressStartedAt` is set only when CALM → STRESS (a relapse from RECOVERING does not reset it). Every state-changing function evaluates stress first, so an expired lock releases without a poke. The lock is active until `stressStartedAt + maxStressLock` or until the state returns to CALM, whichever comes first.
 
 ## 6. Custody model
 
@@ -204,8 +204,8 @@ flowchart LR
 
 | Slot group | Content | Written by |
 |---|---|---|
-| Hot swap state | `lastObservationTs`, `lastTick`, `state`, `stressStartedAt`, `belowExitSince`, `rearmBlocked`, `oracleWarm` | `beforeSwap`, `pokeStress`, vault ops |
-| Observations | Fixed-size array of `{timestamp, tickCumulative, initialized}` | `beforeSwap` |
+| Hot swap state | `lastSwapTs`, `lastTick`, `cumulative`, `lastSnapshotTs`, `state`, `stressStartedAt`, `belowExitSince`, `rearmBlocked`, `oracleWarm` | `beforeSwap`, `pokeStress`, vault ops |
+| Observations | Fixed-size ring of snapshots `{uint40 timestamp, int56 tickCumulative, bool initialized}` | `beforeSwap` (rate-limited) |
 | Vault records | `mapping(uint256 => Vault)`, packed into ≤ 4 slots | vault functions, checkpoints |
 | Positions | `mapping(uint256 => Position[MAX_POSITIONS])` | vault functions |
 | Tickets | `mapping(uint256 => RedeemTicket)`, `nextTicketId` | redeem functions |
@@ -241,4 +241,4 @@ Use `forge inspect BallastHook storageLayout` to produce the authoritative table
 
 ## 10. External dependencies
 
-v4-core (PoolManager, `StateLibrary`, `TickMath`, `SqrtPriceMath`, `FullMath`, `Hooks`), v4-periphery (`BaseHook`, `HookMiner`, optionally `LiquidityAmounts`), solady (math helpers, transient guard) and forge-std. Pin versions in `docs/DECISIONS.md`. No oracles, no keepers, no off-chain services.
+v4-core (PoolManager, `StateLibrary`, `TickMath`, `SqrtPriceMath`, `FullMath`, `Hooks`), OpenZeppelin `uniswap-hooks` v1.2.1 (`BaseHook`, `CurrencySettler`), solady (`lnWad`, transient guard), forge-std, and v4-periphery for tests only (PositionManager, Permit2). `HookMiner` is our own, in `script/utils`. Pin versions in `docs/DECISIONS.md`. No oracles, no keepers, no off-chain services.
