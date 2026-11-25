@@ -1,0 +1,28 @@
+{
+  "_note": "Official addresses copied from the sources listed per chain. Re-verify before every deployment. Fetched 2026-11-25.",
+  "1301": {
+    "name": "Unichain Sepolia",
+    "rpc": "https://sepolia.unichain.org",
+    "explorer": "https://sepolia.uniscan.xyz",
+    "sources": [
+      "https://docs.uniswap.org/contracts/v4/deployments",
+      "https://docs.unichain.org/docs/technical-information/network-information"
+    ],
+    "poolManager": "0x00b036b58a818b1bc34d502d3fe730db729e62ac",
+    "positionManager": "0xf969aee60879c54baaed9f3ed26147db216fd664",
+    "universalRouter": "0xf70536b3bcc1bd1a972dc186a2cf84cc6da6be5d",
+    "stateView": "0xc199f1072a74d4e905aba1a84d9a45e2546b6222",
+    "quoter": "0x572B9cDBcd8c2b8F3Fe849B9d250F35284455d7f",
+    "poolSwapTest": "0x9140a78c1a137c7ff1c151ec8231272af78a99a4",
+    "poolModifyLiquidityTest": "0x5fa728c0a5cfd51bee4b060773f50554c0c8a7ab",
+    "permit2": "0x000000000022D473030F116dDEE9F6B43aC78BA3",
+    "create2Deployer": "0x4e59b44847b379578588920cA78FbF26c0B4956C"
+  },
+  "130": {
+    "name": "Unichain Mainnet",
+    "rpc": "https://mainnet.unichain.org",
+    "explorer": "https://uniscan.xyz",
+    "sources": ["https://docs.uniswap.org/contracts/v4/deployments"],
+    "poolManager": "0x1f98400000000000000000000000000000000004"
+  }
+}
