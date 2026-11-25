@@ -18,3 +18,17 @@ Not mutated in M0: every bound is tested on both sides, and `testFuzz_Validate_N
 | `bps >= 10_000` cap changed to `>` | Caught by `test_Edges_ZeroAndBeyondRange` |
 
 Two first-round findings were fixed before the final run: the bias-size test compared against the (mutated) constant itself, so `EPS_WAD = 1e12` survived until it used a literal; and the nearest-rounding table check was too loose (±1 tick) to detect floor-vs-round, so it now requires exact equality (which holds for all 2,500 values).
+
+## VaultMath (M1)
+| Mutation | Result |
+|---|---|
+| `ceilShare` rounds down | Caught by `testFuzz_MatchesFullMath_AndBracketsExactValue`, `testFuzz_RoundingFavoursVault`, `test_Examples` |
+| `floorShare` rounds up | Caught by the same plus `testFuzz_SplitRedeem_NeverBeatsSingleRedeem` |
+| Zero-supply check removed (either function) | Caught by `test_RevertWhen_SupplyIsZero` |
+| `ceilShare` multiplies by supply instead of shares | Caught by six tests including both round-trip tests |
+| `floorShare` off by one | Caught by `testFuzz_MatchesFullMath_AndBracketsExactValue`, `test_Examples` |
+| `ceilShare` plus one always | Caught by `testFuzz_MatchesFullMath_AndBracketsExactValue`, `test_Examples` |
+| Both directions flipped (deposit floors, redeem ceils) | Caught by both deposit-then-redeem tests and four others |
+
+Observation: the deposit-then-redeem round-trip tests alone do **not** catch a single flipped direction (the property still holds when only one step favours the actor); they catch the combined flip. Single flips are caught by the bracket and rounding-favours-vault tests, so those tests are the load-bearing ones for T9.
+The mutation harness initially matched only some failing fuzz tests (its failure regex mishandled counterexample output); the BandMath results above were re-run with the fixed harness and are unchanged.
