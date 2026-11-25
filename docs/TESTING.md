@@ -123,6 +123,20 @@ Targets (measure, record in `.gas-snapshot`, justify regressions above 5%):
 | `rerange` (2 → 2) | < 700k |
 | `committedDepth()` worst case, `view` | record |
 
+### Oracle gas, measured (M1; `test/gas/ObservationsGas.t.sol`, cold storage, internal to the library call, forge 1.8.4)
+
+| Path | Gas | Note |
+|---|---|---|
+| `update`, same timestamp (no-op) | 2,462 | |
+| `update`, accumulate only | 6,459 | the per-swap hot path when no snapshot is due |
+| `update`, accumulate + snapshot overwrite (ring full) | 14,212 | steady state, at most once per `observationInterval` |
+| `update`, accumulate + snapshot push (ring filling) | 34,029 | first `cardinality` snapshots only |
+| `cumulativeNow` | 2,745 | |
+| `twapTick`, 24 h window, full ring (1,585 slots) | 44,037 | binary search |
+| `twapTick`, 15 min window, full ring | 40,874 | binary search |
+
+**Finding for M2:** stress evaluation needs two TWAPs (anchor and short), about 85k gas of binary search alone, which exceeds the 80k target for `beforeSwap` with an observation write and stress evaluation (§7) once the PoolManager `slot0` read and the write are added. The O(1) paths fit comfortably. Proposed mitigations to decide in M2, after measuring the real `beforeSwap`: (a) monotone cursors for the anchor and short targets (the target `now - window` only moves forward, so the bracketing snapshot advances monotonically and lookup becomes amortized O(1)); (b) a galloping search from the newest snapshot for the short window. Per-path numbers are in `.gas-snapshot` (`forge snapshot --match-path "test/gas/*"`; ring fills happen in `setUp`).
+
 ## 8. Requirement-to-test starter map
 
 | Area | Must-have tests |

@@ -306,7 +306,7 @@ Reference only. It demonstrates how a risk module could size a cap from committe
 ```solidity
 library Observations {
     // Snapshot of the running accumulator, taken at most once per observationInterval.
-    struct Observation { uint40 timestamp; int56 tickCumulative; bool initialized; }
+    struct Observation { uint40 timestamp; int56 tickCumulative; }   // 96 bits, one slot
     // Running accumulator: updated on every swap with a new timestamp (ADR-013).
     struct State {
         uint16 index; uint16 cardinality;
@@ -321,6 +321,7 @@ library Observations {
     function cumulativeNow(State storage s, uint40 nowTs, int24 currentTick) internal view returns (int56);
     /// Exact at snapshot times; linear interpolation between snapshots (error bound: MATH §4).
     function cumulativeAt(Observation[] storage self, State storage s, uint40 nowTs, uint32 secondsAgo, int24 currentTick) internal view returns (int56 cumulative, bool warm);
+    // Errors: TimeRegression(nowTs, lastSwapTs), ZeroWindow(), InvalidInitialization().
     function twapTick(Observation[] storage self, State storage s, uint40 nowTs, uint32 window, int24 currentTick) internal view returns (int24 tick, bool warm);
     /// True iff the oldest retained snapshot is at or before nowTs - window. Monotonic for window <= anchorWindow (R-ORC-7).
     function isWarm(Observation[] storage self, State storage s, uint40 nowTs, uint32 window) internal view returns (bool);

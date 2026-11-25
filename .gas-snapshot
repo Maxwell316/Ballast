@@ -1,0 +1,7 @@
+ObservationsGasFullRingTest:test_Gas_CumulativeNow() (gas: 13735)
+ObservationsGasFullRingTest:test_Gas_TwapTick_AnchorWindow_FullRing() (gas: 55244)
+ObservationsGasFullRingTest:test_Gas_TwapTick_ShortWindow_FullRing() (gas: 52124)
+ObservationsGasFullRingTest:test_Gas_Update_AccumulateAndOverwriteSnapshot() (gas: 47029)
+ObservationsGasRingFillingTest:test_Gas_Update_AccumulateAndPushSnapshot() (gas: 66747)
+ObservationsGasRingFillingTest:test_Gas_Update_AccumulateOnly() (gas: 98971)
+ObservationsGasRingFillingTest:test_Gas_Update_SameTimestamp() (gas: 94873)

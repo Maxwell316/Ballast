@@ -69,3 +69,28 @@ Tests: `test/unit/libraries/DepthMath.t.sol` (unit and properties, all six decim
 **Equivalent mutants (survived, by construction):** the `hi <= lo` → `<` and `sqrtHi <= sqrtLo` → `<` comparisons (equal bounds give a zero amount either way) and removing the `liquidity == 0` guard (zero liquidity gives a zero amount). These guards only save gas. Two orientation guards (`farTick >= nearTick`, `nearTick >= farTick`) were found to be **fully redundant** (an inverted band always yields `hi < lo`) and were removed from `absorbable`, along with the mutants that targeted them.
 
 **Measured rounding bound (differential):** in the 216-case grid (3 positions each) the measured net input exceeded `DepthMath` by 1 to 5 wei and never fell below it. The test bound is `4·(positions + 1) + 4` wei.
+
+## Observations (M1)
+Tests: `test/unit/libraries/Observations.t.sol`, `test/fuzz/ObservationsDifferential.t.sol` (naive full-history model, adversarial swap patterns including same-timestamp swaps, many swaps inside one snapshot interval and extreme ticks), `test/gas/ObservationsGas.t.sol`.
+
+| Mutation | Result |
+|---|---|
+| Accumulator rate-limited like a snapshot (the flaw ADR-013 fixed) | Caught by two differential fuzz tests and four unit tests |
+| Same-timestamp guard removed | Caught by `test_Update_SameTimestampIsNoOp` |
+| Snapshot boundary `>=` → `>` | Caught by `test_Update_SnapshotBoundary_IsInclusive` and four others (a first run **survived** until that boundary test was added) |
+| Tick sign flipped in the accumulator | Caught by ten tests |
+| Ring overwrite index not advanced | Caught by `test_RingWrapsAndKeepsOrder`, `test_Warm_RegressesBelowMinimumCardinality_ButNotAtMinimum` |
+| Ring fills one entry too many (`<` → `<=`) | Caught by `test_RingWrapsAndKeepsOrder` |
+| Oldest-index offset wrong in `_physical` | Caught by three tests including the warm-monotonic fuzz |
+| Cold check `<` → `<=` | Caught by `testFuzz_CumulativeAt_WithinDocumentedBound`, `test_RingWrapsAndKeepsOrder`, one more |
+| Binary search upper bound off | Caught by eight tests |
+| Binary search `<=` → `<` | **Survived: equivalent mutant.** Picking the earlier element when a snapshot timestamp equals the target interpolates to exactly that snapshot's cumulative, so the result is identical; the `a.timestamp == target` shortcut is an optimization. |
+| Interpolation rounds toward zero / wrong denominator | Caught by `test_TwapTick_RoundsTowardNegativeInfinity` / three tests |
+| Newest-snapshot bracket uses the snapshot instead of the accumulator | Caught by `testFuzz_CumulativeAt_WithinDocumentedBound` |
+| TWAP cold branch divides by the window | Caught by `test_ColdHistory_UsesActualElapsedTime` |
+| `isWarm` boundary `<=` → `<` | Caught by four tests |
+| Current tick ignored when extending | Caught by eight tests |
+| Time-regression check removed in `update` | Caught by `test_RevertWhen_TimeRegresses` |
+| Floor division replaced by truncation in the warm TWAP | Caught by `test_TwapTick_RoundsTowardNegativeInfinity` |
+| Double-initialization guard removed | Caught by `test_RevertWhen_InitializedTwiceOrWithZeroCardinality` |
+| `lastTick` not recorded | Caught by `test_Update_RecordsPreSwapTickAndTimestamp` (a first run lacked that test) |
