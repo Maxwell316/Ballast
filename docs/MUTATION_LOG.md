@@ -94,3 +94,28 @@ Tests: `test/unit/libraries/Observations.t.sol`, `test/fuzz/ObservationsDifferen
 | Floor division replaced by truncation in the warm TWAP | Caught by `test_TwapTick_RoundsTowardNegativeInfinity` |
 | Double-initialization guard removed | Caught by `test_RevertWhen_InitializedTwiceOrWithZeroCardinality` |
 | `lastTick` not recorded | Caught by `test_Update_RecordsPreSwapTickAndTimestamp` (a first run lacked that test) |
+
+## StressMachine (M1)
+Tests: `test/unit/libraries/StressMachine.t.sol` (table-driven) and `test/fuzz/StressMachine.fuzz.t.sol` (sequence fuzzing against a reference model written from the SPEC text, plus oracle-independent properties: legal transitions, hysteresis, window start only on CALM → STRESS, no re-arm before CALM, unbroken calm run, lock bounded by `maxStressLock` under adversarial deviation, expiry event at most once per episode).
+
+| Mutation | Result |
+|---|---|
+| Enter threshold `>=` → `>` | Caught by the sequence fuzz and two unit tests |
+| Below-exit `<` → `<=` | Caught by the sequence fuzz and `test_StressToRecovering_OnlyBelowExit` |
+| STRESS → RECOVERING without hysteresis (any dev < enter) | Caught by the sequence fuzz and a unit test |
+| Relapse resets `stressStartedAt` (ADR-019 violation) | Caught by four tests including `testFuzz_LockIsBounded_UnderAdversarialDeviation` |
+| Calm duration `>=` → `>` | Caught by four tests |
+| Calm timer not reset by a between-threshold sample | Caught by three tests |
+| Expiry `>=` → `>` | Caught by the sequence fuzz, `test_LockExpiry_FlaggedOnce_AndCannotRearm`, `test_ZeroMaxLock_ExpiresImmediately` |
+| `lockActive` `<` → `<=` | Caught by four tests |
+| `lockActive` ignores the state (CALM can lock) | Caught by the sequence fuzz and `test_LockActive_FalseInCalm_AndAtExactExpiry` |
+| Not-warm no longer clears timers / not-warm path removed | Caught by `test_NotWarm_ReleasesNonCalmState` and the sequence fuzz |
+| CALM does not clear `stressStartedAt` / the expiry flag | Caught by the sequence fuzz and unit tests |
+| Expiry event repeated (flag ignored) | Caught by the sequence fuzz and `test_LockExpiry_FlaggedOnce_AndCannotRearm` |
+| CALM → STRESS does not record the start | Caught by five tests |
+| `lockedUntil` returns an end time when inactive | Caught by `test_LockExpiry_FlaggedOnce_AndCannotRearm` |
+| RECOVERING with an unset timer never starts a run | Caught by three tests |
+| Expiry computed from the stale input start instead of the new start | **Survived on the first run**, because every test used small timestamps (`now < maxStressLock`), which hid it. Fixed by adding `test_RealisticTimestamps_EntryDoesNotFlagExpiry` and a fuzzed large time base; now caught by three tests. |
+| Input context aliased (`nc = c`) | **Survived on the first run, and exposed a real bug:** `nc = c` between memory structs aliases rather than copies, so `next` mutated the caller's context in place (this also made one fuzz property tautological). Fixed with an explicit field copy; caught by `test_Next_DoesNotMutateInputContext`. |
+
+Removed as redundant: clearing `lockExpiryRecorded` on CALM → STRESS (the flag is always already false in CALM; the mutation of that line survived as an equivalent mutant).

@@ -76,6 +76,42 @@ contract ObservationsDifferentialTest is Test {
         }
     }
 
+    /// @dev Checks one `cumulativeAt` query against the model (exact or within the documented bound).
+    function _checkTarget(Run memory r, uint32 ago) internal view {
+        Observations.State memory st = h.state();
+        (int56 got, bool warm) = h.cumulativeAt(r.nowTs, ago, r.currentTick);
+        assertTrue(warm, "history reaches the epoch while the ring has not wrapped");
+        uint256 target = r.nowTs - ago;
+        int256 diff = int256(got) - m.cumulativeAt(target);
+        uint256 err = uint256(diff < 0 ? -diff : diff);
+        if (target >= st.lastSwapTs) {
+            assertEq(err, 0, "exact at or after the last update");
+            return;
+        }
+        // Bracketing snapshot times (ring not wrapped: physical == logical).
+        uint256 aTs;
+        uint256 bTs = st.lastSwapTs;
+        uint256 len = h.length();
+        for (uint256 i; i < len; ++i) {
+            uint256 ts = h.at(i).timestamp;
+            if (ts <= target) {
+                aTs = ts;
+            } else {
+                bTs = ts;
+                break;
+            }
+        }
+        if (aTs == target) {
+            assertEq(err, 0, "exact at a snapshot time");
+            return;
+        }
+        assertLe(
+            err,
+            uint256(r.interval) * m.swing(aTs, bTs) + 1,
+            "interpolation error within interval * swing"
+        );
+    }
+
     /// @notice `cumulativeAt` at arbitrary past times: exact when the target is at or after the last update or at a
     /// snapshot time; otherwise within `interval * swing(bracket)` (+1 for the floor) of the exact value (MATH §4).
     /// forge-config: default.fuzz.runs = 200
@@ -88,39 +124,10 @@ contract ObservationsDifferentialTest is Test {
     ) public {
         uint32 interval = uint32(bound(intervalRaw, 1, 120));
         Run memory r = _drive(seed, interval, 128, bound(stepsRaw, 1, 60));
-        Observations.State memory st = h.state();
-        uint256 len = h.length();
         for (uint256 k; k < 8; ++k) {
             uint32 ago =
                 uint32(uint256(keccak256(abi.encode(seed, "ago", k))) % (r.nowTs - 1000 + 1));
-            (int56 got, bool warm) = h.cumulativeAt(r.nowTs, ago, r.currentTick);
-            assertTrue(warm, "history reaches the epoch while the ring has not wrapped");
-            uint256 target = r.nowTs - ago;
-            int256 exact = m.cumulativeAt(target);
-            int256 diff = int256(got) - exact;
-            uint256 err = uint256(diff < 0 ? -diff : diff);
-            if (target >= st.lastSwapTs) {
-                assertEq(err, 0, "exact at or after the last update");
-                continue;
-            }
-            // Find the bracketing snapshot times.
-            uint256 aTs;
-            uint256 bTs = st.lastSwapTs;
-            for (uint256 i; i < len; ++i) {
-                uint256 ts = h.at(i).timestamp; // not wrapped: physical == logical
-                if (ts <= target) {
-                    aTs = ts;
-                } else {
-                    bTs = ts;
-                    break;
-                }
-            }
-            if (aTs == target) {
-                assertEq(err, 0, "exact at a snapshot time");
-                continue;
-            }
-            uint256 bound_ = uint256(interval) * m.swing(aTs, bTs) + 1;
-            assertLe(err, bound_, "interpolation error within interval * swing");
+            _checkTarget(r, ago);
         }
     }
 
