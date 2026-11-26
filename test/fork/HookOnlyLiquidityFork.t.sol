@@ -204,8 +204,7 @@ contract HookOnlyLiquidityForkTest is Test {
         bytes32 posKey =
             Position.calculatePositionKey(address(vaults), -1200, 1200, bytes32(v << 8));
         assertEq(pm.getPositionLiquidity(pid, posKey), 3e17);
-        bytes32 hookKey =
-            Position.calculatePositionKey(address(hook), -1200, 1200, bytes32(v << 8));
+        bytes32 hookKey = Position.calculatePositionKey(address(hook), -1200, 1200, bytes32(v << 8));
         assertEq(pm.getPositionLiquidity(pid, hookKey), 0, "the hook owns nothing");
     }
 

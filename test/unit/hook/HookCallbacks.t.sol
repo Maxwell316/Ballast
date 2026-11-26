@@ -96,7 +96,8 @@ contract HookCallbacksTest is HookFixture, BoundDeploy {
         Config memory c = ConfigFixture.prodLike();
         c.collateral = Currency.wrap(address(collateral));
         c.quote = Currency.wrap(address(quote));
-        address predictedHook = vm.computeCreateAddress(address(this), vm.getNonce(address(this)) + 1);
+        address predictedHook =
+            vm.computeCreateAddress(address(this), vm.getNonce(address(this)) + 1);
         BallastVaults bv = new BallastVaults(pm, IBallastHook(predictedHook), c);
         vm.expectRevert();
         new BallastHook(pm, c, address(bv)); // an ordinary CREATE address has (almost surely) the wrong low bits
@@ -298,9 +299,13 @@ contract HookCallbacksTest is HookFixture, BoundDeploy {
         uint256 v = _provide(-600, 600, 5e17);
         bytes32 salt = bytes32(v << 8);
         bytes32 posKey = Position.calculatePositionKey(address(vaults), -600, 600, salt);
-        assertEq(IPoolManager(address(pm)).getPositionLiquidity(pid, posKey), 5e17, "owned by vaults");
+        assertEq(
+            IPoolManager(address(pm)).getPositionLiquidity(pid, posKey), 5e17, "owned by vaults"
+        );
         bytes32 hookKey = Position.calculatePositionKey(address(hook), -600, 600, salt);
-        assertEq(IPoolManager(address(pm)).getPositionLiquidity(pid, hookKey), 0, "hook owns nothing");
+        assertEq(
+            IPoolManager(address(pm)).getPositionLiquidity(pid, hookKey), 0, "hook owns nothing"
+        );
         bytes32 routerKey = Position.calculatePositionKey(address(liqRouter), -600, 600, salt);
         assertEq(IPoolManager(address(pm)).getPositionLiquidity(pid, routerKey), 0);
     }

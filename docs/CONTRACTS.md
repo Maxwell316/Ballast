@@ -29,12 +29,14 @@ Compiler: Solidity 0.8.26, `evm_version = cancun`. No upgradeability, no owner, 
 | Transient `SWAPPED` / `VAULT_OP` flags | ✔ | | |
 | `config()`, `poolId()`, `collateralIsCurrency0()`, `vaults()` | ✔ | | |
 | `createVault`, `seed`, `deposit`, `requestRedeem`, `cancelRedeem`, `claimRedeem`, `rerange`, `deployIdle`, `setCommitment`, `claimCuratorFees` | | ✔ | |
-| `checkpoint`, `flagBreach`, `fundStandby`, `setStandbyRate` | | ✔ | |
+| `checkpoint`, `fundStandby`, `setStandbyRate` | | ✔ | |
 | `unlockCallback`, all `modifyLiquidity`, `settle`, `take`, `mint`, `burn` | | ✔ | |
-| Shares ERC-6909 (`balanceOf`, `transfer`, `approve`, `setOperator`, `totalSupply`) | | ✔ | |
+| Shares ERC-6909 (`balanceOf`, `transfer`, `approve`, `setOperator`, `totalSupply`) | | in `BallastShares` (ADR-050) | |
 | Positions, idle, curator-owed, fund, tickets, exit buckets, curator records | | ✔ | |
 | Reentrancy guard (transient) | | ✔ | |
-| `vault`, `positionsOf`, `ticket`, `record`, `standbyInfo`, `exitingShares` views | | ✔ | |
+| `extsload(slot, n)` (the only read primitive; ADR-050), `configHash`, `shareToken`, `standby`, `depthCalc`, `hook` immutables | | ✔ | |
+| `vault`, `positionsOf`, `ticket`, `vaultRecord`, `vaultCount`, `exitingShares` views (decoded from `extsload`) | | | ✔ |
+| Shares token `BallastShares` (ERC-6909, `totalSupply`, vaults-only `mint`/`burn`/`move`); `BallastDepth` (stateless depth maths); `BallastStandby` (fund, rate, accrual) | separate contracts created by the vaults | | |
 | `committedDepth`, `liveDepth`, `vaultStatus`, `vaultRecord`, `poolAbsorbable`, `previewDeposit`, `previewRedeem` | | | ✔ |
 
 Sections 3.1-3.5 below describe the vaults' surface (`IBallastVaults`); 3.6 and the stress/oracle views describe the hook. The hook has no `IUnlockCallback` and no `modifyLiquidity`.
@@ -178,7 +180,6 @@ function claimCuratorFees(uint256 vaultId, address to) external returns (uint128
 
 ```solidity
 function checkpoint(uint256 vaultId) external;           // accrue standby, crystallize fees
-function flagBreach(uint256 vaultId) external;           // after rerangeGrace; stops accrual
 function pokeStress() external;                          // evaluates the stress machine
 ```
 
@@ -394,7 +395,7 @@ library RewardMath {
 | `fundStandby`, `setStandbyRate` | | | ✔ | | |
 | `requestRedeem`, `cancelRedeem` | | | | ✔ (own shares and tickets) | |
 | `claimRedeem` | | | | ✔ (ticket owner or operator) | |
-| `checkpoint`, `flagBreach`, `pokeStress` | ✔ | ✔ | ✔ | ✔ | |
+| `checkpoint`, `pokeStress` | ✔ | ✔ | ✔ | ✔ | |
 | `unlockCallback` and hook callbacks | | | | | ✔ |
 
 ## 9. Storage layout plan

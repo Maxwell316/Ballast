@@ -62,6 +62,5 @@ interface IBallastEvents {
     event StandbyFunded(address indexed sponsor, uint128 amount);
     event StandbyRateSet(uint128 rate);
     event StandbyDepleted();
-    event FeesCrystallized(uint256 indexed vaultId, uint128 amount0, uint128 amount1);
     event CoverageLost(uint256 indexed vaultId, uint40 graceEnds);
 }

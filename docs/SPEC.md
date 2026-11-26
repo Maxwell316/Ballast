@@ -39,7 +39,7 @@ Out of scope: native ETH, fee-on-transfer or rebasing tokens, upgradeability, ad
 
 ## 4. Liquidity ownership
 
-- **R-LIQ-1** `beforeAddLiquidity` MUST revert with `ExternalLiquidityForbidden` unless `sender == address(vaults)`, where `vaults` is the `BallastVaults` contract the hook created in its constructor (ADR-045).
+- **R-LIQ-1** `beforeAddLiquidity` MUST revert with `ExternalLiquidityForbidden` unless `sender == address(vaults)`, where `vaults` is the `BallastVaults` contract bound immutably at deployment (ADR-045, ADR-050).
 - **R-LIQ-2** `beforeRemoveLiquidity` MUST revert with `ExternalLiquidityForbidden` unless `sender == address(vaults)`.
 - **R-LIQ-3** All positions MUST be owned by the `BallastVaults` contract. Position salt MUST be `bytes32(vaultId << 8 | slot)`, unique per `(vaultId, slot)`.
 - **R-LIQ-4** Only `BallastVaults` calls `modifyLiquidity` or `unlock`. The hook MUST NOT contain any path that calls `modifyLiquidity` or `unlock` and MUST NOT implement `IUnlockCallback` (T19: the PoolManager does not call a hook's callbacks for the hook's own `modifyLiquidity`). Tests: PositionManager, a plain router (add, remove, zero-liquidity poke) and an arbitrary contract that unlocks and calls `modifyLiquidity` all fail; the compiled runtime of the hook contains neither the `modifyLiquidity` selector nor `unlockCallback`.
@@ -86,7 +86,7 @@ States: `CALM`, `STRESS`, `RECOVERING`. Let `dev = collateralIsCurrency0 ? (A âˆ
 | `rerange` | yes | no | no |
 | `deployIdle` | yes | yes | yes |
 | `setCommitment` | yes | yes | yes |
-| `checkpoint`, `flagBreach`, `pokeStress` | yes | yes | yes |
+| `checkpoint`, `pokeStress` | yes | yes | yes |
 | `claimCuratorFees` | yes | yes | yes |
 | `fundStandby`, `setStandbyRate` | yes | yes | yes |
 
@@ -121,7 +121,7 @@ Blocked calls MUST revert with `StressLockActive(until)` where applicable, or `N
 ## 8. Coverage and breach
 
 - **R-COV-1** In CALM, if `D_v < K_v` after anchor drift, the curator has `rerangeGrace` to restore coverage.
-- **R-COV-2** After the grace, anyone MAY call `flagBreach(vaultId)`. It MUST record `breachSince`, increment `breachCount`, and stop standby accrual for the vault.
+- **R-COV-2** The first state-changing call that observes the vault in CALM with coverage still lost after `rerangeGrace` (in practice any `checkpoint`, which is permissionless) MUST record `breachSince`, increment `breachCount`, emit `BreachFlagged` and stop standby accrual for the vault. There is no separate `flagBreach` function (ADR-052).
 - **R-COV-3** A breach MUST clear automatically at the next checkpoint or re-range where `D_v â‰¥ K_v` again.
 - **R-COV-4** Coverage MUST NOT be enforced while the lock is active.
 
@@ -154,7 +154,7 @@ Blocked calls MUST revert with `StressLockActive(until)` where applicable, or `N
 - **R-TX-1** `beforeSwap` MUST set a transient `SWAPPED` flag and revert if `VAULT_OP` is set. The flags live in the hook; the vaults set `VAULT_OP` through `enterVaultOp()`, callable only by the vaults.
 - **R-TX-2** `seed`, `deposit`, `claimRedeem`, `rerange` and `deployIdle` MUST set `VAULT_OP` and revert if `SWAPPED` is set.
 - **R-TX-3** All state-changing external functions of the vaults that unlock MUST be non-reentrant via a transient guard held in the vaults.
-- **R-SPLIT-1** The hook creates the vaults in its constructor and never calls it afterwards; the vaults call the hook only through `enterVaultOp()` (vaults only) and `evaluateStress()`. No owner, admin, proxy or `delegatecall` exists in either contract (ADR-045).
+- **R-SPLIT-1** The vaults are deployed before the hook, with the mined hook address as an immutable; the hook's constructor checks `vaults.code.length > 0`, `vaults.hook() == address(this)` and `vaults.configHash() == keccak256(abi.encode(config))` and thereafter never calls the vaults; the vaults call the hook only through `enterVaultOp()` (vaults only), `evaluateStress()` and `stressInfo()` (ADR-050). The vaults create `BallastShares`, `BallastStandby` and `BallastDepth` in their constructor. No owner, admin, proxy or `delegatecall` exists in either contract (ADR-045).
 - **R-SPLIT-2** The hook's creation code (which embeds the vaults' creation code) MUST stay below the EIP-3860 initcode limit of 49,152 bytes with a stated margin; both runtime sizes MUST stay below 23,800 bytes.
 
 ## 13. Access control

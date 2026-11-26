@@ -445,9 +445,8 @@ contract BallastHook is BaseHook, IBallastHook {
     function _earliestRelease(Evaluation memory e) internal view returns (uint40) {
         uint40 nowTs = _now();
         if (!StressMachine.lockActive(e.ns, e.nc)) return nowTs;
-        uint40 base = e.ns == LockState.RECOVERING && e.nc.belowExitSince != 0
-            ? e.nc.belowExitSince
-            : nowTs;
+        uint40 base =
+            e.ns == LockState.RECOVERING && e.nc.belowExitSince != 0 ? e.nc.belowExitSince : nowTs;
         uint40 t = base + _calmDuration;
         if (t < nowTs) t = nowTs;
         uint40 end = uint40(StressMachine.lockedUntil(e.ns, e.nc));

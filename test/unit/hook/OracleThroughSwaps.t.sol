@@ -64,7 +64,9 @@ contract OracleThroughSwapsTest is HookFixture {
         _modelSwap(true, 1e6);
         Observations.State memory st = hook.obsState();
         // Accumulated: tick 0 for 100 s (pre-swap tick of the first swap), then the displaced tick for 50 s.
-        assertEq(int256(st.cumulative), model.cumulativeAt(vm.getBlockTimestamp()), "exact vs model");
+        assertEq(
+            int256(st.cumulative), model.cumulativeAt(vm.getBlockTimestamp()), "exact vs model"
+        );
         assertEq(before_, 0);
     }
 
@@ -94,7 +96,8 @@ contract OracleThroughSwapsTest is HookFixture {
             uint256 x = uint256(keccak256(abi.encode(seed, i)));
             uint256 mode = x % 8;
             vm.warp(
-                vm.getBlockTimestamp() + (mode == 0 ? 0 : mode == 1 ? (x >> 8) % 7200 : (x >> 8) % 90 + 1)
+                vm.getBlockTimestamp()
+                    + (mode == 0 ? 0 : mode == 1 ? (x >> 8) % 7200 : (x >> 8) % 90 + 1)
             );
             _modelSwap((x >> 100) % 2 == 0, 1e12 + (x >> 120) % 4e16);
         }

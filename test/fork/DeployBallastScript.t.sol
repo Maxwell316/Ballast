@@ -10,13 +10,15 @@ import {PoolKey} from "@uniswap/v4-core/src/types/PoolKey.sol";
 import {PoolId, PoolIdLibrary} from "@uniswap/v4-core/src/types/PoolId.sol";
 import {Currency} from "@uniswap/v4-core/src/types/Currency.sol";
 import {DeployBallast} from "../../script/DeployBallast.s.sol";
+import {VerifyBinding} from "../../script/VerifyBinding.s.sol";
+import {BallastVaults} from "../../src/BallastVaults.sol";
 import {HookPermissions} from "../../src/libraries/HookPermissions.sol";
 import {BallastHook} from "../../src/BallastHook.sol";
 import {Config, LockState} from "../../src/types/Types.sol";
 
 /// @notice Runs the real `DeployBallast` script against a fork of Unichain Sepolia (chain 1301) and checks its
 /// outcome: the hook sits at an address whose flags equal `getHookPermissions()`, the pool is initialised and bound by
-/// the same run, and a third party cannot initialise another pool (T15, ADR-014). Skips without `RPC_URL`.
+/// the same run, the vaults are bound to it in both directions, and a third party cannot initialise another pool (T15, ADR-014). Skips without `RPC_URL`.
 /// @custom:requirement R-POOL-6
 contract DeployBallastScriptTest is Test {
     using StateLibrary for IPoolManager;
@@ -50,6 +52,11 @@ contract DeployBallastScriptTest is Test {
         assertTrue(d.collateral < d.quote, "collateral is currency0");
         assertTrue(hook.collateralIsCurrency0());
         assertEq(PoolId.unwrap(hook.poolId()), d.poolId);
+
+        // Both directions of the hook/vaults binding hold, with the rest of the graph (T20, ADR-050).
+        assertEq(hook.vaults(), d.vaults, "hook.vaults");
+        assertEq(address(BallastVaults(d.vaults).hook()), d.hook, "vaults.hook");
+        new VerifyBinding().verify(hook, d.lens);
 
         // The pool exists on the real PoolManager at the intended tick.
         string memory a = vm.readFile("config/addresses.json");

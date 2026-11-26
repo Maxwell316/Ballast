@@ -19,6 +19,8 @@ import {MockERC20} from "./MockERC20.sol";
 import {ConfigFixture} from "./ConfigFixture.sol";
 import {BallastHookHarness} from "./BallastHookHarness.sol";
 import {BallastVaults} from "../../src/BallastVaults.sol";
+import {BallastVaultsHarness} from "./BallastVaultsHarness.sol";
+import {BallastLens} from "../../src/periphery/BallastLens.sol";
 import {IBallastHook} from "../../src/interfaces/IBallastHook.sol";
 import {Config, Range} from "../../src/types/Types.sol";
 
@@ -41,7 +43,8 @@ abstract contract HookFixture is Test {
     MockERC20 internal collateral;
     MockERC20 internal quote;
     BallastHookHarness internal hook;
-    BallastVaults internal vaults;
+    BallastVaultsHarness internal vaults;
+    BallastLens internal lens;
     PoolKey internal key;
     PoolId internal pid;
     Config internal cfg;
@@ -69,13 +72,14 @@ abstract contract HookFixture is Test {
         c.collateral = Currency.wrap(address(collateral));
         c.quote = Currency.wrap(address(quote));
         cfg = c;
-        vaults = new BallastVaults(pm, IBallastHook(HOOK_ADDR), c);
+        vaults = new BallastVaultsHarness(pm, IBallastHook(HOOK_ADDR), c);
         deployCodeTo(
             "BallastHookHarness.sol:BallastHookHarness",
             abi.encode(address(pm), c, address(vaults)),
             HOOK_ADDR
         );
         hook = BallastHookHarness(HOOK_ADDR);
+        lens = new BallastLens(IBallastHook(HOOK_ADDR), vaults.shareToken());
         (Currency c0, Currency c1) =
             collateralIs0 ? (c.collateral, c.quote) : (c.quote, c.collateral);
         key = PoolKey(c0, c1, c.fee, c.tickSpacing, IHooks(HOOK_ADDR));

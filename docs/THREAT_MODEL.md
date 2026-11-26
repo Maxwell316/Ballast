@@ -157,5 +157,10 @@ Dependency vulnerabilities in v4-core or periphery; token misbehaviour; chain re
 ### T19 — Self-call bypass
 **Attack/hazard:** the PoolManager does not call a hook's callbacks when the hook itself calls `modifyLiquidity`. Any code path in the hook that does so would add or remove liquidity without passing its own gate.
 **Mitigation:** custody lives in `BallastVaults`; the hook contains no `modifyLiquidity` or `unlock` call and does not implement `IUnlockCallback` (ADR-045).
-**Evidence:** a test inspects the compiled hook runtime for the `modifyLiquidity` selector and for `unlockCallback` and fails if either appears.
-**Residual:** a future change adding such a path is caught only by that test, which is part of CI.
+**Evidence:** `LiquidityGateTest`: the compiled ABI has no `unlock*`, `modifyLiquidity`, `settle` or `take`; the runtime code lacks the `unlock` and `unlockCallback` selectors (controlled against the vaults' code); and a state-diff recording of swaps, a poke and a vault operation shows the hook's only outgoing calls are PoolManager storage reads. A literal selector scan is best-effort: the optimizer may build selector constants arithmetically (`modifyLiquidity`'s is absent from the vaults too), so the behavioural and ABI checks carry the weight.
+**Residual:** a future change adding such a path through a constant the scan cannot see would be caught by the behavioural test only on exercised paths; code review of the hook for any external call other than PoolManager reads is a standing audit item.
+
+### T20 — Mis-binding at deployment
+**Attack/hazard:** the hook admits the wrong vaults address, or the vaults trust the wrong hook (a look-alike deployed first, a nonce race, a config mismatch), so G-1 would protect nothing or lock out the real custody.
+**Mitigation (ADR-050):** the vaults address is predicted from the deployer nonce and is a constructor argument of the mined hook; the vaults carry the mined hook address as an immutable; the hook's constructor requires code at the vaults, `vaults.hook() == address(this)` and a matching `configHash`; entrypoints that take a vault id need a vault that can exist only after the hook bound the pool; `DeployBallast` asserts nonce and addresses; `VerifyBinding` asserts the graph in both directions (hook, vaults, shares, standby, depth, lens, flags, pool id).
+**Residual:** a user who deposits into a deployment on which `VerifyBinding` was not run trusts the deployer. `SECURITY.md` states that a deployment is valid only if it passes.

@@ -16,7 +16,9 @@ import {Transient} from "../../src/libraries/Transient.sol";
 contract BallastHookHarness is BallastHook {
     uint256 public lastBeforeSwapGas;
 
-    constructor(IPoolManager pm, Config memory cfg, address vaults_) BallastHook(pm, cfg, vaults_) {}
+    constructor(IPoolManager pm, Config memory cfg, address vaults_)
+        BallastHook(pm, cfg, vaults_)
+    {}
 
     // ─── state readers for tests ───
 

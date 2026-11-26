@@ -69,7 +69,7 @@ Hackathon: Uniswap v4 hooks, track **Active Management & Curated Liquidity**. Ju
 | **Curator** | Professional liquidity manager | Creates a vault, sets ranges and commitment, re-ranges, earns a capped performance cut | Cannot withdraw depositor funds; bounded by coverage and lock rules |
 | **Depositor** | Passive LP following a curator | Deposits/redeems proportional shares | Accepts exit notice and stress lock |
 | **Risk consumer** | Lending protocol, risk manager, dashboard | Reads depth views | Trusts only on-chain state |
-| **Anyone** | Permissionless pokers | Can call `poke`, `checkpoint`, `flagBreach`, settle stress state | None |
+| **Anyone** | Permissionless pokers | Can call `poke`, `checkpoint` (which also records a breach after the grace period, ADR-052), settle stress state | None |
 | **Trader / liquidator** | Swaps against the pool | Normal swaps | None |
 
 There is **no owner, no admin, no pause, no upgrade path** (D-1).
@@ -79,7 +79,7 @@ There is **no owner, no admin, no pause, no upgrade path** (D-1).
 ## 3. Product guarantees and non-goals
 
 ### 3.1 Guarantees (each needs a named test and appears in the demo)
-- **G-1 Vault-only liquidity.** Only the `BallastVaults` contract, created by the hook in its constructor, can add or remove liquidity in the pool; the hook callbacks enforce this with an explicit sender check. Therefore the pool's whole depth is committed depth.
+- **G-1 Vault-only liquidity.** Only the `BallastVaults` contract bound immutably at deployment can add or remove liquidity in the pool; the hook callbacks enforce this with an explicit sender check. Therefore the pool's whole depth is committed depth.
 - **G-2 Oracle-free proportional shares.** Deposits and redemptions are proportional, in kind, and denominated in liquidity. There is no NAV, no price oracle and no spot-price valuation in share accounting.
 - **G-3 Stress lock.** While the pool is in stress, no vault liquidity can leave the pool, bounded by `maxStressLock` so depositors are never trapped indefinitely.
 - **G-4 Exit notice.** Exits mature after `exitNotice`. Depth reported to risk consumers is net of exits maturing inside the consumer's horizon.
@@ -104,7 +104,7 @@ There is **no owner, no admin, no pause, no upgrade path** (D-1).
 
 | Contract / library | Kind | Responsibility |
 |---|---|---|
-| `BallastHook` | Hook (`BaseHook`) | Hook callbacks, oracle, stress machine, the liquidity gate (ADR-045). Creates `BallastVaults` in its constructor. No `modifyLiquidity`, no `unlock` |
+| `BallastHook` | Hook (`BaseHook`) | Hook callbacks, oracle, stress machine, the liquidity gate (ADR-045). Bound to a separately deployed `BallastVaults` (ADR-050); its constructor checks the binding. No `modifyLiquidity`, no `unlock` |
 | `BallastVaults` | Custody (ERC-6909 shares, unlock callback) | Positions, vault shares, PoolManager claims, vault lifecycle, standby accrual. Sole owner of pool liquidity |
 | `BallastLens` | Read-only periphery | Depth views for risk consumers (`IBallastDepthOracle`). Keeps the hook under the 24,576-byte size limit |
 | `SupplyCapAdvisor` | Read-only reference | Converts depth into a suggested supply cap (multiplier × guaranteed depth) |
@@ -349,7 +349,7 @@ Rules: never poke or modify a position whose recorded liquidity is zero (v4 is b
 
 **Commitment changes.** Increases apply immediately. Decreases apply after `exitNotice` (`pendingCommitment`).
 
-**Coverage and breach.** In CALM, anchor drift can push `committedDepth_v` below `commitment`. The curator has `rerangeGrace` to fix it. After that, anyone may call `flagBreach(vaultId)`; the vault stops accruing standby fees until coverage is restored and its record logs the breach. In STRESS coverage is **not** enforced, because liquidity being consumed by the falling market is the product working as intended.
+**Coverage and breach.** In CALM, anchor drift can push `committedDepth_v` below `commitment`. The curator has `rerangeGrace` to fix it. After that, the first `checkpoint` (anyone may call it) records the breach (ADR-052); the vault stops accruing standby fees until coverage is restored and its record logs the breach. In STRESS coverage is **not** enforced, because liquidity being consumed by the falling market is the product working as intended.
 
 ### 6.7 Standby fund and accrual (`RewardMath`)
 - **DECISION D-8:** the standby fee is paid in the pool's **quote** currency, so rewards land directly in the vault's `idle` balance and are shared by shares pro rata, in kind. This removes per-user reward debt and any need to hook ERC-6909 transfers.

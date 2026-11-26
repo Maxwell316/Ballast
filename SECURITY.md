@@ -7,6 +7,7 @@ Ballast custodies liquidity. Treat it as unaudited software unless an audit repo
 - **Deployments:** testnet only (see `deployments/`). Do not deposit funds you cannot afford to lose.
 
 ## Trust model (summary)
+- A deployment is valid only if `script/VerifyBinding.s.sol` passes against it (it checks that the hook and the vaults are bound to each other in both directions, with matching configuration and flags).
 - No owner, no pause, no upgrade. Funds move only under the rules in `docs/SPEC.md`.
 - The sponsor can fund and set a bounded standby rate. It cannot touch depositor funds.
 - Curators manage ranges and earn a capped fee. They cannot withdraw depositor funds.

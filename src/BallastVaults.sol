@@ -267,7 +267,9 @@ contract BallastVaults is IUnlockCallback, IBallastVaults {
         StressInfo memory e = _requireCalm();
         OpCtx memory c = _ctx(OP_SEED, vaultId, e);
         c.receiver = receiver;
-        c.extra = abi.encode(liquidities, uint128(INITIAL_SHARES - MINIMUM_SHARES), amount0Max, amount1Max);
+        c.extra = abi.encode(
+            liquidities, uint128(INITIAL_SHARES - MINIMUM_SHARES), amount0Max, amount1Max
+        );
         return _run(c);
     }
 
@@ -362,7 +364,7 @@ contract BallastVaults is IUnlockCallback, IBallastVaults {
         nonReentrant
     {
         hook.enterVaultOp();
-        VaultData storage vd = _curatorVault(vaultId);
+        _curatorVault(vaultId);
         _requireSeeded(vaultId);
         if (liquidities.length != newRanges.length) revert InvalidLiquidities();
         _validateRanges(newRanges);
@@ -379,7 +381,7 @@ contract BallastVaults is IUnlockCallback, IBallastVaults {
         nonReentrant
     {
         hook.enterVaultOp();
-        VaultData storage vd = _curatorVault(vaultId);
+        _curatorVault(vaultId);
         _requireSeeded(vaultId);
         if (liquidity == 0) revert InvalidLiquidities();
         Range[] memory one = new Range[](1);
@@ -420,7 +422,7 @@ contract BallastVaults is IUnlockCallback, IBallastVaults {
         nonReentrant
         returns (uint128 amount0, uint128 amount1)
     {
-        VaultData storage vd = _curatorVault(vaultId);
+        _curatorVault(vaultId);
         if (to == address(0)) revert InvalidReceiver();
         OpCtx memory c;
         c.op = OP_CLAIM_FEES;
@@ -444,11 +446,7 @@ contract BallastVaults is IUnlockCallback, IBallastVaults {
     /// @notice PoolManager callback. Only the PoolManager can call it, and only `unlock` calls made by this
     /// contract carry data it understands.
     /// @dev Virtual so that the test harness can add a stand-in operation (ADR-044).
-    function unlockCallback(bytes calldata data)
-        external
-        virtual
-        returns (bytes memory)
-    {
+    function unlockCallback(bytes calldata data) external virtual returns (bytes memory) {
         if (msg.sender != address(poolManager)) revert NotPoolManager();
         OpCtx memory c = abi.decode(data, (OpCtx));
         (uint128 a0, uint128 a1) = _dispatch(c);
@@ -567,8 +565,7 @@ contract BallastVaults is IUnlockCallback, IBallastVaults {
     }
 
     function _opRerange(OpCtx memory c) internal returns (uint128, uint128) {
-        (Range[] memory ranges, uint128[] memory liqs) =
-            abi.decode(c.extra, (Range[], uint128[]));
+        (Range[] memory ranges, uint128[] memory liqs) = abi.decode(c.extra, (Range[], uint128[]));
         Env memory env = _env(c);
         _crystallize(c.v, env);
         _flush(c.v, env);
@@ -639,7 +636,8 @@ contract BallastVaults is IUnlockCallback, IBallastVaults {
             // forge-lint: disable-next-line(unsafe-typecast)
             _vaults[c.v].positionCount = uint8(ps.length);
         }
-        (int128 a0, int128 a1) = _modify(c.v, slot, range.tickLower, range.tickUpper, int256(uint256(liq)), env);
+        (int128 a0, int128 a1) =
+            _modify(c.v, slot, range.tickLower, range.tickUpper, int256(uint256(liq)), env);
         ps[slot].liquidity += liq;
         VaultData storage vd = _vaults[c.v];
         uint256 o0 = _neg(a0);
@@ -914,7 +912,6 @@ contract BallastVaults is IUnlockCallback, IBallastVaults {
         _toClaims(_c1(), f1);
         env.f0 = 0;
         env.f1 = 0;
-        emit FeesCrystallized(v, _u128(f0), _u128(f1));
     }
 
     /// @dev Committed depth `D_v` (anchor band) and the standby depth sample `min(D_v, live)` (ADR-025), computed by
@@ -1022,7 +1019,9 @@ contract BallastVaults is IUnlockCallback, IBallastVaults {
                     || lo % _tickSpacing != 0 || hi % _tickSpacing != 0
             ) revert InvalidRange(lo, hi);
             for (uint256 j; j < i; ++j) {
-                if (ranges[j].tickLower == lo && ranges[j].tickUpper == hi) revert DuplicateRange();
+                if (ranges[j].tickLower == lo && ranges[j].tickUpper == hi) {
+                    revert DuplicateRange();
+                }
             }
         }
     }

@@ -75,9 +75,8 @@ contract BallastDepth {
                 );
             }
         } else if (sqrtSpotX96 > lo) {
-            unit = SqrtPriceMath.getAmount1Delta(
-                lo, sqrtSpotX96 < hi ? sqrtSpotX96 : hi, 1e18, false
-            );
+            unit =
+                SqrtPriceMath.getAmount1Delta(lo, sqrtSpotX96 < hi ? sqrtSpotX96 : hi, 1e18, false);
         }
         if (unit == 0) return 0;
         dl = FixedPointMathLib.fullMulDivUp(shortfall, 1e18, unit) + 1;

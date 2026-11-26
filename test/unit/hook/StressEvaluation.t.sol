@@ -33,7 +33,9 @@ contract StressEvaluationTest is StressDriver {
         assertEq(
             uint8(previewed), uint8(LockState.STRESS), "view previews the transition (R-STR-7)"
         );
-        assertEq(until, uint40(vm.getBlockTimestamp()) + 1 hours, "lock ends maxStressLock after now");
+        assertEq(
+            until, uint40(vm.getBlockTimestamp()) + 1 hours, "lock ends maxStressLock after now"
+        );
         assertEq(uint8(_stored()), uint8(LockState.CALM), "view did not write");
 
         vm.recordLogs();

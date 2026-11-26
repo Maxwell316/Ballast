@@ -36,8 +36,8 @@ flowchart LR
 
 | Component | Responsibility | Trust notes |
 |---|---|---|
-| `BallastHook` | Callbacks, oracle, stress machine, liquidity gate (`sender == vaults`); creates the vaults in its constructor | Custodies nothing; contains no `modifyLiquidity`/`unlock` path (T19). Security-critical. |
-| `BallastVaults` | Positions, vault shares (ERC-6909), PoolManager claims, all vault operations, standby accrual | The only contract that custodies funds and the only owner of pool liquidity (G-1). Security-critical. |
+| `BallastHook` | Callbacks, oracle, stress machine, liquidity gate (`sender == vaults`); constructor verifies the binding to the separately deployed vaults (ADR-050) | Custodies nothing; contains no `modifyLiquidity`/`unlock` path (T19). Security-critical. |
+| `BallastVaults` | Positions, PoolManager claims, all vault operations; creates `BallastShares` (ERC-6909 shares), `BallastStandby` (fund, rate, accrual) and `BallastDepth` (stateless depth maths) in its constructor; exposes `extsload` | The only contract that custodies funds and the only owner of pool liquidity (G-1). Security-critical. |
 | `Observations` | Ring buffer of tick cumulatives | Pure storage-library logic |
 | `BandMath`, `DepthMath` | Convert bps to ticks, compute absorbable collateral | Pure; differential-tested against real swaps |
 | `StressMachine` | State transition function | Pure; table-driven reference test |
@@ -203,9 +203,9 @@ flowchart LR
 
 - Principal lives in PoolManager positions owned by `BallastVaults`. The hook owns nothing and its callbacks admit only the vaults address for liquidity changes.
 - Idle balances, curator-owed amounts and the standby fund are PoolManager **claims** (`mint`/`burn`) held by the vaults, so moving between them is accounting plus claim movement inside one unlock.
-- Vault shares are the vaults' own ERC-6909. They are unrelated to PoolManager claims. Code and docs distinguish them as `shares` and `claims`.
+- Vault shares are the ERC-6909 of `BallastShares`, created by and minted only by the vaults. They are unrelated to PoolManager claims. Code and docs distinguish them as `shares` and `claims`.
 - No accounting reads token `balanceOf`. Unsolicited transfers to either contract are ignored and unrecoverable by design (documented in SECURITY).
-- **Call graph (acyclic):** hook creates vaults (constructor only); vaults call `hook.enterVaultOp()` and `hook.evaluateStress()`; the PoolManager calls the hook's callbacks and the vaults' `unlockCallback`.
+- **Call graph (acyclic):** the hook's constructor makes read-only staticcalls to the vaults to check the binding (`hook()`, `configHash()`) and never calls them again; vaults call `hook.enterVaultOp()`, `hook.evaluateStress()`, `hook.stressInfo()`; vaults call `standby.accrue`, `shares.mint/burn/move` and `depthCalc.measure`; standby and shares call only the PoolManager (standby) or nothing (shares, depth); the PoolManager calls the hook's callbacks and the vaults' and standby's `unlockCallback`. The lens reads the vaults through `extsload`.
 
 ## 7. Storage layout plan (to be finalized in M2/M3)
 
