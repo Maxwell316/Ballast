@@ -147,6 +147,21 @@ contract CrashTest is StressDriver {
         vaults.claimRedeem(t2, address(this));
     }
 
+    /// @notice `lockState().lockedUntil` is the informational upper bound `stressStartedAt + maxStressLock` while the
+    /// lock is active, zero otherwise; `earliestRelease` (used for netting) is never later (ADR-047).
+    /// @custom:requirement R-VIEW-3
+    function test_LockState_LockedUntilIsAnUpperBound_EarliestReleaseNeverLater() public {
+        _setUpCrash(1 hours);
+        (LockState s0, uint40 until0) = hook.lockState();
+        assertEq(uint8(s0), uint8(LockState.CALM));
+        assertEq(until0, 0);
+        _toStress();
+        (LockState s1, uint40 until1) = hook.lockState();
+        assertEq(uint8(s1), uint8(LockState.STRESS));
+        assertEq(until1, hook.stressStorage().stressStartedAt + 1 hours);
+        assertLe(hook.stressInfo().earliestRelease, until1);
+    }
+
     // ─── horizon netting around the lock ───
 
     function test_LiveDepth_NetsExitsThatCannotBeBlocked_ButNotOnesTheLockHolds() public {

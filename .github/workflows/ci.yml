@@ -22,7 +22,7 @@ jobs:
           forge coverage --report lcov --no-match-path "test/fork/*"
           python3 tools/coverage_gate.py lcov.info src/ --lines 95 --branches 90
       - name: Compliance report
-        run: python3 tools/compliance.py
+        run: python3 tools/compliance.py --check
   slither:
     runs-on: ubuntu-latest
     steps:

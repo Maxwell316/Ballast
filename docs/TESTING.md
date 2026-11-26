@@ -117,11 +117,16 @@ Targets (measure, record in `.gas-snapshot`, justify regressions above 5%):
 |---|---|
 | `beforeSwap`, no write, no stress evaluation | < 30k |
 | `beforeSwap`, write and evaluation | < 80k |
-| `deposit` (2 positions) | < 500k |
-| `requestRedeem` | < 120k |
-| `claimRedeem` (2 positions) | < 450k |
-| `rerange` (2 → 2) | < 700k |
-| `committedDepth()` worst case, `view` | record |
+| `deposit` (2 positions) | < 650k (measured 593,603; was 500k, ADR-057) |
+| `requestRedeem` | < 200k (measured 159,088; was 120k) |
+| `claimRedeem` (2 positions) | < 650k (measured 590,811; was 450k) |
+| `rerange` (2 → 2) | < 800k (measured 731,446; was 700k) |
+| `checkpoint` (2 positions, rate set) | < 500k (measured 436,716) |
+| `setCommitment` | < 500k (measured 441,951: it runs a full checkpoint) |
+| `committedDepth()` worst case (16 vaults × 8 positions), `view` | measured 1,180,177 gas |
+| `liveDepth()` worst case (16 vaults × 8 positions), `view` | measured 1,736,575 gas |
+
+The vault figures come from `test/gas/VaultGas.t.sol` (funded standby with a nonzero rate; cold storage; forge 1.8.4, `via_ir`, `optimizer_runs = 200`) and are asserted there.
 
 ### Oracle gas, measured (M1; `test/gas/ObservationsGas.t.sol`, cold storage, internal to the library call, forge 1.8.4)
 

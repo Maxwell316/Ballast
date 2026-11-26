@@ -16,6 +16,7 @@ import {PositionView, Range, TicketView, VaultView} from "../../../src/types/Typ
 /// the exit queue, curator fees and token conservation (M3; R-VLT-1..12, G-2, INV-1..5).
 /// @custom:requirement R-VLT-1 R-VLT-2 R-VLT-3 R-VLT-5 R-VLT-7 R-VLT-8 R-VLT-9
 /// @custom:guarantee G-2
+/// @custom:requirement R-VLT-4 R-VLT-6 R-FEE-1 R-FEE-3 R-LIQ-6
 contract VaultLifecycleTest is HookFixture {
     using StateLibrary for IPoolManager;
 

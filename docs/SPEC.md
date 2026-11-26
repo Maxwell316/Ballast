@@ -155,7 +155,7 @@ Blocked calls MUST revert with `StressLockActive(until)` where applicable, or `N
 - **R-TX-2** `seed`, `deposit`, `claimRedeem`, `rerange` and `deployIdle` MUST set `VAULT_OP` and revert if `SWAPPED` is set.
 - **R-TX-3** All state-changing external functions of the vaults that unlock MUST be non-reentrant via a transient guard held in the vaults.
 - **R-SPLIT-1** The vaults are deployed before the hook, with the mined hook address as an immutable; the hook's constructor checks `vaults.code.length > 0`, `vaults.hook() == address(this)` and `vaults.configHash() == keccak256(abi.encode(config))` and thereafter never calls the vaults; the vaults call the hook only through `enterVaultOp()` (vaults only), `evaluateStress()` and `stressInfo()` (ADR-050). The vaults create `BallastShares`, `BallastStandby` and `BallastDepth` in their constructor. No owner, admin, proxy or `delegatecall` exists in either contract (ADR-045).
-- **R-SPLIT-2** The hook's creation code (which embeds the vaults' creation code) MUST stay below the EIP-3860 initcode limit of 49,152 bytes with a stated margin; both runtime sizes MUST stay below 23,800 bytes.
+- **R-SPLIT-2** Every contract's initcode (creation code plus its largest constructor arguments) MUST stay at least 3,000 bytes below the EIP-3860 limit of 49,152 bytes, and every runtime MUST stay below 23,800 bytes, with one exception: `BallastVaults` may reach 24,300 bytes provided at least 250 bytes remain to EIP-170 (ADR-050, ADR-051). Enforced by `test/unit/Sizes.t.sol`.
 
 ## 13. Access control
 

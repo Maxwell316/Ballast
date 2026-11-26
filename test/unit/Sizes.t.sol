@@ -14,6 +14,7 @@ import {ConfigFixture} from "../utils/ConfigFixture.sol";
 /// @notice Size bounds (ADR-046, ADR-050): every runtime below the target, every initcode (creation code plus the
 /// largest constructor arguments) at least 3,000 bytes under EIP-3860's 49,152. `BallastVaults` is the one runtime
 /// allowed above the 23,800 target, up to 24,300, so that a margin of at least 250 bytes to EIP-170 remains.
+/// @custom:requirement R-SPLIT-2
 contract SizesTest is Test {
     uint256 internal constant EIP_170 = 24_576;
     uint256 internal constant EIP_3860 = 49_152;

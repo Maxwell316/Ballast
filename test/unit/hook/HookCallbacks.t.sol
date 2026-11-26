@@ -311,6 +311,7 @@ contract HookCallbacksTest is HookFixture, BoundDeploy {
     }
 
     /// @notice Donations are not restricted (R-LIQ-5): the hook has no donate flag.
+    /// @custom:requirement R-LIQ-5
     function test_Donate_IsNotRestricted() public {
         _fullSetUp(true);
         _provide(-600, 600, 1e18);

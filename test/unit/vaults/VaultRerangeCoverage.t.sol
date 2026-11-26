@@ -16,6 +16,7 @@ import {CuratorRecord, PositionView, Range, VaultView} from "../../../src/types/
 /// (-6000, 6000) with liquidity 1e19 has a committed depth of roughly 3.6e17 collateral.
 /// @custom:requirement R-VLT-10 R-VLT-12 R-COV-1 R-COV-2 R-COV-3
 /// @custom:invariant INV-7
+/// @custom:requirement R-VLT-13
 contract VaultRerangeCoverageTest is HookFixture {
     using StateLibrary for IPoolManager;
 

@@ -72,6 +72,7 @@ contract TxProbe {
 /// and the same results with `--isolate`). If a future Foundry stops doing so, that probe fails loudly instead of the
 /// reset tests passing vacuously.
 /// @custom:requirement R-TX-1 R-TX-2 R-TX-3
+/// @custom:invariant INV-14
 contract TransientGuardsTest is HookFixture {
     TxProbe internal probe;
     bool internal separateTx;

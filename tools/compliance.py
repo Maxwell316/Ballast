@@ -3,7 +3,9 @@
 
 Reads requirement IDs (R-AREA-n) from docs/SPEC.md and invariant IDs (INV-n) from CLAUDE.md, finds
 `@custom:requirement` and `@custom:invariant` tags in test/**/*.sol, writes docs/COMPLIANCE.md and prints a summary.
-With --check, exits non-zero if any SPEC requirement has no test. Until the suite is complete it only reports.
+Requirements that cannot be tested (documentation guidance) are listed with a reason in docs/COMPLIANCE_WAIVERS.md
+(`- R-XXX-n: reason`). With --check, exits non-zero if any ID has neither a test nor a waiver, if a tag names an
+unknown ID, or if a waiver is stale (the ID now has a test or does not exist).
 """
 import re
 import sys
@@ -43,7 +45,20 @@ def collect_tests():
     return {k: sorted(v) for k, v in mapping.items()}
 
 
+def collect_waivers():
+    path = ROOT / "docs" / "COMPLIANCE_WAIVERS.md"
+    if not path.exists():
+        return {}
+    out = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        m = re.match(r"-\s+(R-[A-Z]+-\d+|INV-\d+):\s*(.+)", line.strip())
+        if m:
+            out[m.group(1)] = m.group(2).strip()
+    return out
+
+
 def main():
+    waivers = collect_waivers()
     reqs = collect_ids(ROOT / "docs" / "SPEC.md", REQ)
     invs = collect_ids(ROOT / "CLAUDE.md", INV)
     tests = collect_tests()
@@ -54,6 +69,9 @@ def main():
         lines += [f"## {title}", "", "| ID | Tests |", "|---|---|"]
         for i in ids:
             t = tests.get(i)
+            if not t and i in waivers:
+                lines.append(f"| {i} | _waived: {waivers[i]}_ |")
+                continue
             if not t:
                 missing.append(i)
             lines.append(f"| {i} | {', '.join(f'`{x}`' for x in t) if t else '_none yet_'} |")
@@ -63,10 +81,15 @@ def main():
         lines += ["## Tags with no matching requirement", "", ", ".join(unknown), ""]
     (ROOT / "docs" / "COMPLIANCE.md").write_text("\n".join(lines), encoding="utf-8")
     total = len(reqs) + len(invs)
-    print(f"{total - len(missing)}/{total} IDs have at least one test; {len(missing)} without.")
+    stale = sorted(w for w in waivers if w in tests or w not in set(reqs) | set(invs))
+    waived = sorted(w for w in waivers if w not in tests and w in set(reqs) | set(invs))
+    print(f"{total - len(missing) - len(waived)}/{total} IDs have at least one test; {len(waived)} waived; "
+          f"{len(missing)} without.")
+    if stale:
+        print("Stale waivers:", ", ".join(stale))
     if unknown:
         print("Tags with no matching requirement:", ", ".join(unknown))
-    if "--check" in sys.argv and (missing or unknown):
+    if "--check" in sys.argv and (missing or unknown or stale):
         sys.exit(1)
 
 

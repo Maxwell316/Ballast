@@ -147,6 +147,7 @@ contract TotalityHandler is Test {
 /// transition are total over the documented domain, including MIN/MAX ticks, zero/huge time steps and every state.
 /// @custom:requirement R-STR-10 R-STR-6 R-ORC-1
 /// @custom:invariant INV-12
+/// @custom:requirement R-ORC-9
 contract BeforeSwapTotalityTest is HookFixture {
     TotalityHandler internal handler;
 
