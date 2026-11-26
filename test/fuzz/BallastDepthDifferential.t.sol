@@ -85,4 +85,27 @@ contract BallastDepthDifferentialTest is Test {
             : (uint256(dl) * uint256(sqrtP - sLo)) >> 96;
         assertGe(got + 2, sf, "removal covers the shortfall (within rounding of the check itself)");
     }
+
+    /// @notice Edge cases of the dust-shrink formula: a position that holds none of the missing currency, spot outside
+    /// the range on either side, and a shortfall so large the whole position would go.
+    function test_ShrinkLiquidity_EdgeCases() public view {
+        int24 lo = -600;
+        int24 hi = 600;
+        uint160 inside = TickMath.getSqrtPriceAtTick(0);
+        uint160 below = TickMath.getSqrtPriceAtTick(-1200);
+        uint160 above = TickMath.getSqrtPriceAtTick(1200);
+        // Missing token0 but spot is at or above the range: the position holds only token1.
+        assertEq(depth.shrinkLiquidity(lo, hi, 1e18, above, 100, true), 0);
+        // Missing token1 but spot is at or below the range: the position holds only token0.
+        assertEq(depth.shrinkLiquidity(lo, hi, 1e18, below, 100, false), 0);
+        // Spot below the range: token0 is priced over the whole range (lower bound is the range's own).
+        assertGt(depth.shrinkLiquidity(lo, hi, 1e18, below, 100, true), 0);
+        // Spot above the range: token1 is priced over the whole range.
+        assertGt(depth.shrinkLiquidity(lo, hi, 1e18, above, 100, false), 0);
+        // Inside the range both currencies work.
+        assertGt(depth.shrinkLiquidity(lo, hi, 1e18, inside, 100, true), 0);
+        assertGt(depth.shrinkLiquidity(lo, hi, 1e18, inside, 100, false), 0);
+        // A shortfall that would remove the whole position returns zero (the caller reverts).
+        assertEq(depth.shrinkLiquidity(lo, hi, 10, inside, 1e18, true), 0);
+    }
 }

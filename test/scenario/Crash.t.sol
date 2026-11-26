@@ -162,6 +162,17 @@ contract CrashTest is StressDriver {
         assertLe(hook.stressInfo().earliestRelease, until1);
     }
 
+    /// @notice Inside the lock no ticket can leave, so the lens counts none; past the earliest release the matured
+    /// ticket counts (ADR-047).
+    function test_ExitingShares_AreZeroInsideTheLock_AndCountedAfterTheEarliestRelease() public {
+        _setUpCrash(1 hours);
+        assertEq(lens.exitingShares(v, 0), 1e17, "calm: the matured ticket can leave now");
+        _toStress();
+        assertEq(lens.exitingShares(v, 0), 0, "locked: nothing can leave inside the horizon");
+        uint32 untilRelease = uint32(hook.stressInfo().earliestRelease - vm.getBlockTimestamp());
+        assertEq(lens.exitingShares(v, untilRelease), 1e17, "counted once the horizon reaches the release");
+    }
+
     // ─── horizon netting around the lock ───
 
     function test_LiveDepth_NetsExitsThatCannotBeBlocked_ButNotOnesTheLockHolds() public {

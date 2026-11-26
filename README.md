@@ -4,7 +4,7 @@
 
 Ballast is a Uniswap v4 hook that lets curators commit liquidity to the price band where liquidations will sell, locks that liquidity against withdrawal while the market is under stress, and publishes the committed depth on-chain so lending risk models can size collateral caps from depth that is actually guaranteed.
 
-> Status: under development (milestone M2 of 11: hook skeleton, oracle and stress machine; no vaults yet). Testnet only. Unaudited. See [SECURITY.md](SECURITY.md).
+> Status: under development (the vault core, stress gate and standby are implemented and tested; simulation, deployment and polish are next). Testnet only. Unaudited. See [SECURITY.md](SECURITY.md).
 
 ---
 
@@ -26,7 +26,7 @@ Ballast does **not** protect depositors from price losses. The lock holds risk i
 
 | Path | Contents |
 |---|---|
-| `src/` | `BallastHook` (callbacks, oracle, stress, gate), `BallastVaults` (custody, shares, vault operations), `BallastLens`, `SupplyCapAdvisor`, libraries, interfaces |
+| `src/` | `BallastHook` (callbacks, oracle, stress, gate), `BallastVaults` (custody and vault operations), `BallastShares` (ERC-6909 shares), `BallastStandby` (sponsor fund and accrual), `BallastDepth` (stateless depth maths), `BallastLens` and `SupplyCapAdvisor` (read-only), libraries, interfaces |
 | `test/` | unit, fuzz, differential, invariant, scenario, fork and gas tests |
 | `script/` | deployment, pool creation, seeding, standby funding, crash replay |
 | `docs/` | spec, contract reference, architecture, math, threat model, testing, economics, deployment, simulation, decisions |
@@ -47,9 +47,11 @@ Deployment instructions: [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
 
 ## Deployments
 
-| Network | Hook | Lens | Pool | Explorer |
-|---|---|---|---|---|
-| _pending_ | _pending_ | _pending_ | _pending_ | _pending_ |
+| Network | Hook | Vaults | Lens | Pool | Explorer |
+|---|---|---|---|---|---|
+| _pending_ | _pending_ | _pending_ | _pending_ | _pending_ | _pending_ |
+
+A deployment is valid only if `script/VerifyBinding.s.sol` passes against it.
 
 Demo deployments use compressed time windows for demonstration. They are not recommended production parameters.
 
