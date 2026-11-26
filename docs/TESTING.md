@@ -184,7 +184,7 @@ Searched `src/` and `test/` for memory-struct assignments and storage-to-memory 
 
 ## 9. CI pipeline
 
-`.github/workflows/ci.yml` runs: checkout with submodules, install Foundry, `forge fmt --check`, `forge build --sizes`, `forge test` (CI profile), `forge coverage` with threshold check, Slither, and compliance-matrix generation. Fork tests run on a schedule or manual dispatch if an RPC secret exists.
+`.github/workflows/ci.yml` runs: checkout with submodules, install Foundry, `forge fmt --check`, `forge build --sizes --skip "test/**" --skip "script/**"` (the test-only `BallastVaultsHarness` exceeds EIP-170 by design and is excluded; `unit/Sizes` is the enforced gate), `forge test` (CI profile), `forge coverage` with threshold check, Slither, and compliance-matrix generation. Fork tests run on a schedule or manual dispatch if an RPC secret exists.
 
 ## 10. G-1 and split-architecture tests (ADR-045, ADR-050)
 

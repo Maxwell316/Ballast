@@ -204,6 +204,10 @@ contract BallastVaults is IUnlockCallback, IBallastVaults {
         bytes extra;
     }
 
+    /// @dev Most rounding dust one re-range can leave per currency: each removal rounds down and each addition rounds
+    /// up by at most one wei, so at most 2 * MAX_POSITIONS wei, doubled for margin (ADR-055).
+    uint256 internal constant RERANGE_DUST_CAP = 4 * MAX_POSITIONS;
+
     uint8 internal constant OP_SEED = 1;
     uint8 internal constant OP_DEPOSIT = 2;
     uint8 internal constant OP_REDEEM = 3;
@@ -396,13 +400,8 @@ contract BallastVaults is IUnlockCallback, IBallastVaults {
     /// @custom:requirement R-VLT-12 R-SBY-5
     function setCommitment(uint256 vaultId, uint128 newCommitment) external nonReentrant {
         VaultData storage vd = _curatorVault(vaultId);
-        StressInfo memory e = _evalFull();
-        if (_supplyOf(vaultId) != 0) {
-            // Accrue at the old commitment before it changes, without unlocking (no shares or liquidity move).
-            Env memory env = _env(_ctx(OP_CHECKPOINT, vaultId, e));
-            _measure(vaultId, env);
-            _accrue(vaultId, env, type(uint128).max);
-        }
+        // Accrue at the old commitment before it changes (R-SBY-5): the standard checkpoint, through one unlock.
+        if (_supplyOf(vaultId) != 0) _checkpointVault(vaultId);
         if (newCommitment >= vd.commitment) {
             vd.commitment = newCommitment;
             vd.pendingCommitment = 0;
@@ -438,6 +437,10 @@ contract BallastVaults is IUnlockCallback, IBallastVaults {
     function checkpoint(uint256 vaultId) external nonReentrant {
         _vault(vaultId);
         _requireSeeded(vaultId);
+        _checkpointVault(vaultId);
+    }
+
+    function _checkpointVault(uint256 vaultId) private {
         _run(_ctx(OP_CHECKPOINT, vaultId, _evalFull()));
     }
 
@@ -515,14 +518,13 @@ contract BallastVaults is IUnlockCallback, IBallastVaults {
             vd.lastCheckpoint = _now();
             vd.lastDepthSample = env.sample;
             _updateCoverage(c.v, env);
-            emit Seeded(c.v, c.receiver, shares, _u128(p0), _u128(p1));
         } else {
             // Scaled sample: after the deposit the depth is at least proportional (ceil), so scaling down is
             // conservative.
             vd.lastDepthSample =
                 _u128(FixedPointMathLib.fullMulDiv(env.sample, supply + shares, supply));
-            emit Deposited(c.v, c.caller, c.receiver, shares, _u128(p0), _u128(p1));
         }
+        emit Deposited(c.v, c.caller, c.receiver, shares, _u128(p0), _u128(p1));
         shareToken.mint(c.receiver, c.v, shares);
         return (_u128(p0), _u128(p1));
     }
@@ -584,9 +586,6 @@ contract BallastVaults is IUnlockCallback, IBallastVaults {
             net0 += a0;
             net1 += a1;
         }
-        // Rounding dust bound (ADR-049, ADR-055): each removal rounds down and each addition rounds up by at most one
-        // wei per currency, so a shortfall above 2 * (removals + additions) is not dust and reverts.
-        uint256 maxDust = 2 * (ps.length + ranges.length);
         delete _positions[c.v];
         uint256 largest;
         for (uint256 i; i < ranges.length; ++i) {
@@ -605,7 +604,7 @@ contract BallastVaults is IUnlockCallback, IBallastVaults {
 
         // Dust rule (ADR-046): the net of removals and additions settles against idle. If idle cannot cover a
         // shortfall, the largest new position is shrunk by the minimal liquidity that does.
-        (net0, net1) = _coverShortfall(c.v, largest, net0, net1, env, maxDust);
+        (net0, net1) = _coverShortfall(c.v, largest, net0, net1, env);
         _settleNet(_c0(), net0, vd.idle0, c.v, true);
         _settleNet(_c1(), net1, vd.idle1, c.v, false);
 
@@ -613,11 +612,9 @@ contract BallastVaults is IUnlockCallback, IBallastVaults {
         if (env.committed < vd.commitment) {
             revert CoverageBelowCommitment(env.committed, vd.commitment);
         }
-        uint128 afterD = env.sample;
-        env.sample = afterD;
         _accrue(c.v, env, before_);
         ++_records[c.v].rerangeCount;
-        emit Reranged(c.v, vd.positionCount, before_, afterD);
+        emit Reranged(c.v, vd.positionCount, before_, env.sample);
         return (0, 0);
     }
 
@@ -690,20 +687,15 @@ contract BallastVaults is IUnlockCallback, IBallastVaults {
 
     /// @dev If a currency's net debt exceeds idle, removes the minimal liquidity from the largest new position so the
     /// removal covers the shortfall. At most one shrink per currency; reverts `InsufficientIdle` if that fails.
-    function _coverShortfall(
-        uint256 v,
-        uint256 largest,
-        int256 net0,
-        int256 net1,
-        Env memory env,
-        uint256 maxDust
-    ) internal returns (int256, int256)
+    function _coverShortfall(uint256 v, uint256 largest, int256 net0, int256 net1, Env memory env)
+        internal
+        returns (int256, int256)
     {
         for (uint256 k; k < 2; ++k) {
             uint256 idle = k == 0 ? _vaults[v].idle0 : _vaults[v].idle1;
             int256 net = k == 0 ? net0 : net1;
             if (net >= 0 || uint256(-net) <= idle) continue;
-            if (uint256(-net) - idle > maxDust) revert InsufficientIdle();
+            if (uint256(-net) - idle > RERANGE_DUST_CAP) revert InsufficientIdle();
             (int128 a0, int128 a1) = _shrink(v, largest, uint256(-net) - idle, k == 0, env);
             net0 += a0;
             net1 += a1;
@@ -1028,9 +1020,7 @@ contract BallastVaults is IUnlockCallback, IBallastVaults {
                     || lo % _tickSpacing != 0 || hi % _tickSpacing != 0
             ) revert InvalidRange(lo, hi);
             for (uint256 j; j < i; ++j) {
-                if (ranges[j].tickLower == lo && ranges[j].tickUpper == hi) {
-                    revert DuplicateRange();
-                }
+                if (ranges[j].tickLower == lo && ranges[j].tickUpper == hi) revert DuplicateRange();
             }
         }
     }

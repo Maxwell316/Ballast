@@ -12,7 +12,7 @@ jobs:
       - name: Format
         run: forge fmt --check
       - name: Build and sizes
-        run: forge build --sizes
+        run: forge build --sizes --skip "test/**" --skip "script/**"
       - name: Tests
         run: forge test -vvv
       - name: Coverage gate (all of src/, from the end of M2)

@@ -10,11 +10,11 @@ M3 (vault core) in progress. The split-custody work is complete (ADR-045, ADR-05
 - Split custody: `BallastHook` (callbacks, oracle, stress, gate, `enterVaultOp`, `evaluateStress`), `BallastVaults` (all vault operations, positions, claims, `extsload`), `BallastShares` (ERC-6909 shares), `BallastStandby` (fund, rate, accrual), `BallastDepth` (stateless depth maths), `BallastLens` (decoded views, depth, previews), `SupplyCapAdvisor`.
 - Deployment (ADR-050): vaults deployed first at a nonce-predicted address, hook mined over the full creation code and CREATE2-deployed, binding checked in the hook's constructor and by `script/VerifyBinding.s.sol`. `DeployBallast` runs end to end on a fork of chain 1301 (`test/fork/DeployBallastScript.t.sol`).
 - Tests: M2 suite adapted and green; `LiquidityGate` (G-1 local, T19), `HookOnlyLiquidityFork` (real PositionManager and routers on the 1301 fork), `LensLayout`, `Sizes`, `BallastDepthDifferential`. Gate mutations (`!=`, check removed) caught (MUTATION_LOG.md).
-- Sizes (`via_ir`, `optimizer_runs = 200`): hook 14,027 runtime / 18,117 initcode; vaults 24,258 / 36,184 (margin 318 to EIP-170, inside the ADR-051 band); standby 3,105; shares 2,022; depth 2,889. Enforced by `test/unit/Sizes.t.sol`.
+- Sizes (`via_ir`, `optimizer_runs = 200`): hook 14,027 runtime / 18,117 initcode; vaults 24,268 / 36,194 (margin 308 to EIP-170, inside the ADR-051 band); standby 3,105; shares 2,022; depth 2,889. Enforced by `test/unit/Sizes.t.sol`.
 
 ## Known gaps in the vault surface (to close in M3-M7)
 - `flagBreach` was removed (ADR-052): breach is recorded at the first checkpoint after the grace period.
-- Vaults runtime has 318 bytes of headroom to EIP-170; further growth in the vaults needs the ADR-051 fallback cuts (b: `setCommitment`, c: `deployIdle`, d: `cancelRedeem`), asked in that order.
+- Vaults runtime has 308 bytes of headroom to EIP-170; further growth in the vaults needs the ADR-051 fallback cuts (b: `setCommitment`, c: `deployIdle`, d: `cancelRedeem`), asked in that order.
 - Gas budgets in `docs/TESTING.md` have not been re-measured for the split (do with the M3 gas tests).
 
 ## Next

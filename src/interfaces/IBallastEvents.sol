@@ -7,13 +7,6 @@ interface IBallastEvents {
     event VaultCreated(
         uint256 indexed vaultId, address indexed curator, uint128 commitment, uint16 curatorFeeBps
     );
-    event Seeded(
-        uint256 indexed vaultId,
-        address indexed receiver,
-        uint128 shares,
-        uint128 amount0,
-        uint128 amount1
-    );
     event Deposited(
         uint256 indexed vaultId,
         address indexed depositor,
