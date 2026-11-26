@@ -28,6 +28,15 @@ contract ObservationsHarness {
         return Observations.cumulativeAt(obs, s, nowTs, secondsAgo, currentTick);
     }
 
+    function cumulativeAtHinted(
+        uint40 nowTs,
+        uint32 secondsAgo,
+        int24 currentTick,
+        Observations.Cursor memory hint
+    ) external view returns (int56, bool, Observations.Cursor memory) {
+        return Observations.cumulativeAtHinted(obs, s, nowTs, secondsAgo, currentTick, hint);
+    }
+
     function twapTick(uint40 nowTs, uint32 window, int24 currentTick)
         external
         view
