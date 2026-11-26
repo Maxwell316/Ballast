@@ -29,10 +29,10 @@ Capital for price manipulation, the ability to deposit as any actor, to run cont
 
 ## 4. Threat analysis
 
-### T1 — Liquidity added or removed outside the hook
+### T1 — Liquidity added or removed outside the vaults contract
 **Attack:** use the PositionManager or a router to add liquidity (to dilute or game depth) or remove it (to escape the lock).
-**Mitigation:** `beforeAdd/RemoveLiquidity` revert unconditionally; the hook's own calls skip callbacks. **VERIFY** the self-call behaviour in the pinned core.
-**Evidence:** tests with the PositionManager and a minimal router for both directions; a smoke test in the deployment script.
+**Mitigation:** `beforeAdd/RemoveLiquidity` revert unless `sender == address(vaults)` (ADR-045); only `BallastVaults` calls `modifyLiquidity`.
+**Evidence:** tests with the PositionManager, a plain router (add, remove, poke) and an arbitrary unlock-then-modify contract; mutation of the gate (`!=`, missing check) makes them fail; a smoke test in the deployment script.
 **Residual:** none known beyond dependency correctness.
 
 ### T2 — Share inflation and donation attacks
@@ -145,7 +145,7 @@ Dependency vulnerabilities in v4-core or periphery; token misbehaviour; chain re
 
 ## 7. Review checklist for auditors
 
-- [ ] Confirm the self-call callback skip and PositionManager failure path.
+- [ ] Confirm the sender gate, the PositionManager failure path and the absence of `modifyLiquidity`/`unlock` in the hook bytecode (T19).
 - [ ] Walk every `unlockCallback` path; verify all deltas settle to zero.
 - [ ] Confirm `modifyLiquidity` fee separation in every path.
 - [ ] Confirm checkpoint-before-share-change in every function.
@@ -153,3 +153,9 @@ Dependency vulnerabilities in v4-core or periphery; token misbehaviour; chain re
 - [ ] Confirm bounds on all loops and that swap paths do not read vault state.
 - [ ] Confirm no `balanceOf`-based accounting.
 - [ ] Confirm hook address flags and permissions on the target chain.
+
+### T19 — Self-call bypass
+**Attack/hazard:** the PoolManager does not call a hook's callbacks when the hook itself calls `modifyLiquidity`. Any code path in the hook that does so would add or remove liquidity without passing its own gate.
+**Mitigation:** custody lives in `BallastVaults`; the hook contains no `modifyLiquidity` or `unlock` call and does not implement `IUnlockCallback` (ADR-045).
+**Evidence:** a test inspects the compiled hook runtime for the `modifyLiquidity` selector and for `unlockCallback` and fails if either appears.
+**Residual:** a future change adding such a path is caught only by that test, which is part of CI.

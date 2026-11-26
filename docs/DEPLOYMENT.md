@@ -45,9 +45,10 @@ forge script script/DeployBallast.s.sol --rpc-url http://127.0.0.1:8545 --broadc
 1. **Mock assets (if chosen).** Deploy mock collateral and quote ERC-20s and a simple router (Q-4). Record addresses.
 2. **Deploy the hook** with `DeployBallast.s.sol`:
    - Compute flags from `getHookPermissions()` using the `Hooks.*_FLAG` constants.
-   - Mine a salt with our own `HookMiner` (`script/utils`) using the constructor arguments (PoolManager, `Config`).
+   - Mine a salt with our own `HookMiner` (`script/utils`) using the **full creation code** (the hook's initcode embeds the `BallastVaults` creation code, ADR-045) and the constructor arguments (PoolManager, `Config`). Assert the creation code is below the EIP-3860 limit of 49,152 bytes.
    - Deploy through the CREATE2 deployer (the standard constant from `forge-std`).
    - **Assert** the deployed address's permission bits equal the intended flags.
+   - The hook creates `BallastVaults` in its constructor; read its address from `hook.vaults()` and record both in the manifest.
    - Deploy `BallastLens` and `SupplyCapAdvisor`.
    - Initialize the pool from the `initializer` account (same broadcast).
    - Write `deployments/<chainId>.json`.
@@ -62,7 +63,7 @@ forge script script/DeployBallast.s.sol --rpc-url http://127.0.0.1:8545 --broadc
 
 | Check | Expected |
 |---|---|
-| External add liquidity via PositionManager | Reverts `ExternalLiquidityForbidden` |
+| External add liquidity via PositionManager | Reverts `ExternalLiquidityForbidden` (gate: `sender == vaults`) |
 | External remove liquidity | Reverts |
 | Seed and deposit | Succeeds; shares minted |
 | Swap in both directions | Succeeds; `beforeSwap` writes observation after the interval |
@@ -140,3 +141,5 @@ forge script script/DeployBallast.s.sol:DeployBallast \
 
 The script asserts before finishing: the PoolManager and the CREATE2 deployer have code; the hook code exists at the mined address; the address flags equal `getHookPermissions()`; collateral sorts as currency0. `test/fork/DeployBallastScript.t.sol` runs the same script on a fork in CI (skipped without `RPC_URL`).
 
+
+The M2 testnet deployment (hook skeleton, no vaults) is superseded by the M9 deployment of the split architecture (ADR-045).

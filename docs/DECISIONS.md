@@ -256,3 +256,30 @@ The fork test showed that removing liquidity rounds amounts down and adding roun
 | `via_ir` | Not needed so far |
 | Settlement helper | OpenZeppelin `CurrencySettler` (ADR-030) |
 | Five hook flags on chain 1301 | Exercised by `test/fork/HooksOnChain.t.sol` (F-3) |
+
+
+## ADR-045 — Split custody: `BallastHook` and `BallastVaults`
+**Context:** The M3–M7 vault logic written into `BallastHook` produced a runtime of 40.6 KB (`via_ir`) / 46.1 KB (legacy, `optimizer_runs = 1`) against the 24,576-byte limit (M2 hook alone: 13.5 KB). Stubbing each function to a revert showed no single hog, so trimming cannot close the gap.
+**Decision (maintainer-approved):**
+- `BallastHook` keeps the callbacks, the oracle, the stress machine and the liquidity gate. `BallastVaults` owns positions, vault shares (ERC-6909), PoolManager claims and all vault operations. The hook creates the vaults contract in its own constructor (`new BallastVaults(...)`), so the two immutable addresses are not circular and neither contract has an owner, admin, proxy or `delegatecall`.
+- D-2 stands (one hook per pool) and extends to one vaults contract per hook. **D-3 is amended:** one hook plus one custody contract; pure maths stays in internal libraries.
+- **G-1 is reformulated:** only the `BallastVaults` contract, created by the hook in its constructor, can add or remove liquidity in the pool; the hook callbacks enforce this with an explicit sender check (`sender == address(vaults)`). **INV-1:** every position is owned by the vaults contract. The old reliance on the PoolManager's self-call skip is removed (R-LIQ-1, R-LIQ-4, T1). Because the vaults contract is not the hook, the PoolManager *does* call the hook's `beforeAdd/RemoveLiquidity` for it, and the check lets it through.
+- **Acyclic calls.** The hook never calls the vaults after its constructor. The vaults call the hook through two functions only: `enterVaultOp()` (restricted to the vaults address; reverts if `SWAPPED`, sets `VAULT_OP`; the transient flags stay in the hook) and `evaluateStress()` (permissionless; the logic of `pokeStress`, returning the evaluation). The reentrancy guard lives in the vaults; the swap-path guard stays in the hook.
+- The hook does not implement `IUnlockCallback` and contains no call to `modifyLiquidity` or `unlock` (T19). A test inspects the compiled runtime bytecode for the `modifyLiquidity` selector and for `unlockCallback`.
+- The hook's initcode embeds the vaults' creation code. EIP-3860 allows 49,152 bytes; a test asserts a margin, and `HookMiner` mines with the full creation code. The M2 testnet deployment is superseded by the M9 deployment.
+- Size protocol: both runtime sizes stay below 23,800 bytes. If the vaults exceed it, the standby fund and accrual move to a third contract `BallastStandby` under the rules in ADR-046 (written with measurements first). No further splits without maintainer approval. No `delegatecall`, proxies or dispatcher mega-functions.
+**Consequences:** each liquidity operation now also triggers a hook callback (gas up; re-measured in TESTING). `previewDeposit`/`previewRedeem` move to the lens (estimates). Mining and the manifest cover two addresses.
+
+## ADR-046 — Compiler settings and the third-contract rule
+_Filled after measuring the split (see the size table in TESTING.md)._
+
+## ADR-047 — Exit netting uses the earliest possible release, not `lockedUntil`
+**Context:** `max(maturity, lockedUntil)` assumes the lock lasts to its hard cap, but the lock can end earlier when the market calms, so it overstates guaranteed depth.
+**Decision (maintainer-approved):** `earliestRelease = min(lockExpiry, earliestCalm)`, `lockExpiry = stressStartedAt + maxStressLock`; `earliestCalm` is `now` in CALM (no lock) or when the lock has expired, `now + calmDuration` in STRESS, and `max(now, belowExitSince + calmDuration)` in RECOVERING (`belowExitSince` is the calm timer's start; 0 means the timer is not running, so `now + calmDuration`). The effective exit time of a ticket is `max(maturity, earliestRelease)`. `lockedUntil` stays in `StressInfo` and `lockState()` as informational: an **upper bound only**. `StressInfo.earliestRelease` is added. Exact formula in MATH §5a; SPEC R-VIEW-2/R-VIEW-3; vectors added to the stress reference tests.
+
+## ADR-048 — Bucketed ticket aggregation for exit netting; previews move to the lens
+**Context:** `liveDepth` must net tickets maturing within a horizon, but loops over tickets are unbounded and a capped open-ticket list can be griefed.
+**Decision:** Tickets keep exact maturity for claims. For netting, each vault keeps `EXIT_BUCKETS = 16` maturity buckets of width `ceil(exitNotice / 16)` seconds plus a matured pool. A bucket counts as exiting when its start (maturity rounded down) is within the horizon, so the figure is never below the exact one (conservative). A slot reused by a later epoch folds into the matured pool. Views are bounded by `MAX_VAULTS × 16`. `previewDeposit`/`previewRedeem` move to `BallastLens`; they are estimates.
+
+## ADR-049 — Re-range dust rule
+**Decision:** Re-range removes all liquidity and re-adds the curator's `liquidities` in one unlock; the net per currency settles against vault idle. If idle cannot cover a shortfall, the largest new position is shrunk by the minimal liquidity whose removal covers it (once per currency); otherwise `InsufficientIdle`. Coverage is then checked (`CoverageBelowCommitment`). Test bound: idle decrease per re-range ≤ 2 × (n_old + n_new) per currency for a same-range re-range.

@@ -17,11 +17,15 @@
 ```mermaid
 flowchart LR
     S[Sponsor<br/>issuer / risk DAO] -- fundStandby, setStandbyRate --> H
-    C[Curator] -- createVault, rerange, deployIdle --> H
-    D[Depositor] -- deposit, requestRedeem, claimRedeem --> H
+    C[Curator] -- createVault, rerange, deployIdle --> V
+    D[Depositor] -- deposit, requestRedeem, claimRedeem --> V
     T[Trader / liquidator] -- swap --> PM
-    H[BallastHook] -- unlock: modifyLiquidity / settle / take / mint / burn --> PM[(PoolManager)]
-    PM -- beforeInitialize, beforeSwap, beforeAdd/RemoveLiquidity --> H
+    C -.-> V
+    D -.-> V
+    V[BallastVaults] -- unlock: modifyLiquidity / settle / take / mint / burn --> PM[(PoolManager)]
+    PM -- beforeInitialize, afterInitialize, beforeSwap, beforeAdd/RemoveLiquidity --> H[BallastHook]
+    H -- constructor only: creates --> V
+    V -- enterVaultOp, evaluateStress --> H
     R[Risk consumer<br/>lending protocol / dashboard] -- views --> L[BallastLens]
     L -- reads --> H
     L -- StateLibrary reads --> PM
@@ -32,7 +36,8 @@ flowchart LR
 
 | Component | Responsibility | Trust notes |
 |---|---|---|
-| `BallastHook` | Holds all pool liquidity, enforces rules, accounts shares | The only contract that custodies funds. Security-critical. |
+| `BallastHook` | Callbacks, oracle, stress machine, liquidity gate (`sender == vaults`); creates the vaults in its constructor | Custodies nothing; contains no `modifyLiquidity`/`unlock` path (T19). Security-critical. |
+| `BallastVaults` | Positions, vault shares (ERC-6909), PoolManager claims, all vault operations, standby accrual | The only contract that custodies funds and the only owner of pool liquidity (G-1). Security-critical. |
 | `Observations` | Ring buffer of tick cumulatives | Pure storage-library logic |
 | `BandMath`, `DepthMath` | Convert bps to ticks, compute absorbable collateral | Pure; differential-tested against real swaps |
 | `StressMachine` | State transition function | Pure; table-driven reference test |
@@ -180,25 +185,27 @@ Lock timeline: `stressStartedAt` is set only when CALM → STRESS (a relapse fro
 ```mermaid
 flowchart LR
     subgraph PoolManager
-      P[Hook-owned positions<br/>principal]
-      Cl[ERC-6909 claims held by the hook<br/>idle, curator-owed, standby fund]
+      P[Positions owned by BallastVaults<br/>principal]
+      Cl[ERC-6909 claims held by BallastVaults<br/>idle, curator-owed, standby fund]
     end
-    subgraph Hook_internal_ledgers[Hook ledgers]
+    subgraph Vaults_internal_ledgers[BallastVaults ledgers]
       Sh[vault shares ERC-6909]
       Id[idle0, idle1 per vault]
       Co[curatorOwed per vault]
       Fu[fund balance]
     end
+    H[BallastHook<br/>no custody] -. gate: sender == vaults .-> P
     P --- Id
     Cl --- Id
     Cl --- Co
     Cl --- Fu
 ```
 
-- Principal lives in PoolManager positions owned by the hook.
-- Idle balances, curator-owed amounts and the standby fund are PoolManager **claims** (`mint`/`burn`), so moving between them is accounting plus claim movement inside one unlock.
-- Vault shares are the hook's own ERC-6909. They are unrelated to PoolManager claims. Code and docs distinguish them as `shares` and `claims`.
-- No accounting reads token `balanceOf`. Unsolicited transfers to the hook are ignored and unrecoverable by design (documented in SECURITY).
+- Principal lives in PoolManager positions owned by `BallastVaults`. The hook owns nothing and its callbacks admit only the vaults address for liquidity changes.
+- Idle balances, curator-owed amounts and the standby fund are PoolManager **claims** (`mint`/`burn`) held by the vaults, so moving between them is accounting plus claim movement inside one unlock.
+- Vault shares are the vaults' own ERC-6909. They are unrelated to PoolManager claims. Code and docs distinguish them as `shares` and `claims`.
+- No accounting reads token `balanceOf`. Unsolicited transfers to either contract are ignored and unrecoverable by design (documented in SECURITY).
+- **Call graph (acyclic):** hook creates vaults (constructor only); vaults call `hook.enterVaultOp()` and `hook.evaluateStress()`; the PoolManager calls the hook's callbacks and the vaults' `unlockCallback`.
 
 ## 7. Storage layout plan (to be finalized in M2/M3)
 

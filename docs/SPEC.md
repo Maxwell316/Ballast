@@ -39,10 +39,10 @@ Out of scope: native ETH, fee-on-transfer or rebasing tokens, upgradeability, ad
 
 ## 4. Liquidity ownership
 
-- **R-LIQ-1** `beforeAddLiquidity` MUST revert with `ExternalLiquidityForbidden` for every caller that reaches it.
-- **R-LIQ-2** `beforeRemoveLiquidity` MUST revert with `ExternalLiquidityForbidden` for every caller that reaches it.
-- **R-LIQ-3** All positions MUST be owned by the hook. Position salt MUST be `bytes32(vaultId << 8 | slot)`, unique per `(vaultId, slot)`.
-- **R-LIQ-4** The hook's own liquidity operations rely on the PoolManager skipping hook callbacks for self-calls. A deployment smoke test MUST demonstrate that the hook can modify liquidity while an external router and the PositionManager cannot. **VERIFY**
+- **R-LIQ-1** `beforeAddLiquidity` MUST revert with `ExternalLiquidityForbidden` unless `sender == address(vaults)`, where `vaults` is the `BallastVaults` contract the hook created in its constructor (ADR-045).
+- **R-LIQ-2** `beforeRemoveLiquidity` MUST revert with `ExternalLiquidityForbidden` unless `sender == address(vaults)`.
+- **R-LIQ-3** All positions MUST be owned by the `BallastVaults` contract. Position salt MUST be `bytes32(vaultId << 8 | slot)`, unique per `(vaultId, slot)`.
+- **R-LIQ-4** Only `BallastVaults` calls `modifyLiquidity` or `unlock`. The hook MUST NOT contain any path that calls `modifyLiquidity` or `unlock` and MUST NOT implement `IUnlockCallback` (T19: the PoolManager does not call a hook's callbacks for the hook's own `modifyLiquidity`). Tests: PositionManager, a plain router (add, remove, zero-liquidity poke) and an arbitrary contract that unlocks and calls `modifyLiquidity` all fail; the compiled runtime of the hook contains neither the `modifyLiquidity` selector nor `unlockCallback`.
 - **R-LIQ-5** `donate` is not restricted.
 - **R-LIQ-6** The hook MUST NOT call `modifyLiquidity` (including a zero-delta fee poke) on a position whose recorded liquidity is zero. **VERIFY** that v4 reverts on updating an empty position.
 
@@ -144,16 +144,18 @@ Blocked calls MUST revert with `StressLockActive(until)` where applicable, or `N
 ## 11. Views
 
 - **R-VIEW-1** `committedDepth()` MUST sum `min(D_v, K_v)` over vaults not in breach.
-- **R-VIEW-2** `liveDepth(impactBps, horizon)` MUST measure from current spot, over all pool liquidity, rounded down. Because of G-1 all pool liquidity is vault liquidity, so it MUST be computed by iterating every vault's positions (bounded by R-VIEW-4), never by scanning ticks. It MUST subtract for each vault the fraction of shares in tickets whose effective exit time `max(maturity, lockedUntil)` is `≤ now + horizon`.
-- **R-VIEW-3** `lockState()` MUST return the current state and, if the lock is active, `lockedUntil = stressStartedAt + maxStressLock`.
+- **R-VIEW-2** `liveDepth(impactBps, horizon)` (netting uses `earliestRelease`, MATH §5a, ADR-047) MUST measure from current spot, over all pool liquidity, rounded down. Because of G-1 all pool liquidity is vault liquidity, so it MUST be computed by iterating every vault's positions (bounded by R-VIEW-4), never by scanning ticks. It MUST subtract for each vault the fraction of shares in tickets whose effective exit time `max(maturity, earliestRelease)` is `≤ now + horizon`, where `earliestRelease = min(stressStartedAt + maxStressLock, earliestCalm)` (MATH §5a).
+- **R-VIEW-3** `lockState()` MUST return the current state and, if the lock is active, `lockedUntil = stressStartedAt + maxStressLock`, an informational **upper bound** on the lock end. `StressInfo.earliestRelease` is the earliest the lock could release and is what netting uses.
 - **R-VIEW-4** All views MUST be bounded by `MAX_VAULTS × MAX_POSITIONS` iterations.
 - **R-VIEW-5** `liveDepth` is the figure risk consumers SHOULD use to size caps. `committedDepth` is for coverage and reward accounting and does not net exits or measure from spot.
 
 ## 12. Same-transaction guards
 
-- **R-TX-1** `beforeSwap` MUST set a transient `SWAPPED` flag and revert if `VAULT_OP` is set.
+- **R-TX-1** `beforeSwap` MUST set a transient `SWAPPED` flag and revert if `VAULT_OP` is set. The flags live in the hook; the vaults set `VAULT_OP` through `enterVaultOp()`, callable only by the vaults.
 - **R-TX-2** `seed`, `deposit`, `claimRedeem`, `rerange` and `deployIdle` MUST set `VAULT_OP` and revert if `SWAPPED` is set.
-- **R-TX-3** All state-changing external functions that unlock MUST be non-reentrant via a transient guard.
+- **R-TX-3** All state-changing external functions of the vaults that unlock MUST be non-reentrant via a transient guard held in the vaults.
+- **R-SPLIT-1** The hook creates the vaults in its constructor and never calls it afterwards; the vaults call the hook only through `enterVaultOp()` (vaults only) and `evaluateStress()`. No owner, admin, proxy or `delegatecall` exists in either contract (ADR-045).
+- **R-SPLIT-2** The hook's creation code (which embeds the vaults' creation code) MUST stay below the EIP-3860 initcode limit of 49,152 bytes with a stated margin; both runtime sizes MUST stay below 23,800 bytes.
 
 ## 13. Access control
 
