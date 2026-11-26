@@ -125,6 +125,7 @@ contract HookCallbacksTest is HookFixture {
         // Pool tick is -1200 for the whole 100 s since initialisation.
         (int24 twap,) = hook.twapTick(100);
         assertEq(twap, -1200);
+        assertEq(hook.obsState().lastTick, -1200, "oracle seeded with the initial tick");
     }
 
     function test_RevertWhen_InitializerIsNotConfigured() public {
@@ -175,6 +176,17 @@ contract HookCallbacksTest is HookFixture {
             abi.encodeWithSelector(IBallastErrors.NativeCurrencyUnsupported.selector),
             cfg.initializer
         );
+    }
+
+    /// @notice `currency1` native is unreachable through the PoolManager (it rejects unordered currencies first), so the
+    /// hook's own check is exercised by a direct call from the PoolManager address.
+    function test_RevertWhen_Currency1IsNative_DirectCall() public {
+        _preInit(true);
+        PoolKey memory k = key;
+        k.currency1 = Currency.wrap(address(0));
+        vm.prank(address(pm));
+        vm.expectRevert(IBallastErrors.NativeCurrencyUnsupported.selector);
+        hook.beforeInitialize(cfg.initializer, k, 1 << 96);
     }
 
     function test_RevertWhen_CurrencyPairIsNotCollateralAndQuote() public {

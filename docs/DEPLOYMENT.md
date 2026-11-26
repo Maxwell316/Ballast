@@ -113,3 +113,30 @@ There is no upgrade path. A fix means deploying a new hook and pool and migratin
 - [ ] Smoke tests recorded.
 - [ ] README results table filled from `analysis/results/` with the pre-registered bar stated.
 - [ ] `SECURITY.md` contact address replaced with a real one.
+
+---
+
+## 8. M2 deployment on Unichain Sepolia (hook skeleton; wiring smoke test)
+
+**What it deploys:** two demo mock tokens (`script/mocks/MockToken.sol`, open `mint`, testnet only), the `BallastHook` at a CREATE2 address mined for its five flags, and the pool initialisation, all in one broadcast from the keystore account, which becomes the hook's immutable `initializer` and (unless `SPONSOR` is set) `sponsor`. Parameters are `script/config/DemoConfig.sol` (compressed windows; **demo values, not recommendations**). This hook has no vaults yet; M9 deploys the final hook at a new address.
+
+**Dry run** (no key needed; runs the real script against a fork of chain 1301; done for M2, 4 transactions, estimated 5.6M gas):
+```bash
+forge script script/DeployBallast.s.sol:DeployBallast \
+  --fork-url https://sepolia.unichain.org \
+  --sender 0x000000000000000000000000000000000000dEaD
+```
+
+**Broadcast** (from your machine, with your own cast keystore; replace the two placeholders):
+```bash
+forge script script/DeployBallast.s.sol:DeployBallast \
+  --rpc-url https://sepolia.unichain.org \
+  --account <KEYSTORE_NAME> --sender <KEYSTORE_ADDRESS> \
+  --broadcast
+```
+`--sender` must be the address of the keystore account. The account needs a little testnet ETH (the dry run estimated 5.6M gas, about 0.0000056 ETH at the quoted fee; fund a multiple of that). Optional: `SPONSOR=<address>` in the environment to use a different sponsor. Do **not** add `--verify` yet: the explorer's verification API endpoint is not verified (VERIFY); verification is a separate step once the addresses are known.
+
+**What to send back:** the four transaction hashes in order from `broadcast/DeployBallast.s.sol/1301/run-latest.json` (two `CREATE` of `MockToken`, the call to the CREATE2 deployer, the `initialize` call) and the script's console output (`collateral`, `quote`, `hook`, `salt`, `poolId`, `start tick`). Addresses depend on your account's nonce, so they will differ from the dry run. They are then recorded in `deployments/1301.json` and checked against chain state: code at each address, hook address flags, `config()` equals `DemoConfig`, the pool is initialised at the start tick, and `PoolInitializerOnly` for another sender.
+
+The script asserts before finishing: the PoolManager and the CREATE2 deployer have code; the hook code exists at the mined address; the address flags equal `getHookPermissions()`; collateral sorts as currency0. `test/fork/DeployBallastScript.t.sol` runs the same script on a fork in CI (skipped without `RPC_URL`).
+

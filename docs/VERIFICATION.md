@@ -95,6 +95,14 @@
 - The PoolManager on 1301 has `owner() = 0x5b73C5498c1E3b4dbA84de0F1833c4a029d90519` and `protocolFeeController() = 0x0` (`cast call`). The owner controls protocol fees, which is a **dependency-level trust assumption**, not a Ballast privilege (SECURITY, THREAT_MODEL).
 - **Protocol fee formula (ADR-031).** `slot0` packs `lpFee` and a 24-bit `protocolFee` as two 12-bit halves (`zeroForOne` = low 12 bits, `oneForZero` = high 12 bits; `ProtocolFeeLibrary.getZeroForOneFee/getOneForZeroFee`, `ProtocolFeeLibrary.sol:17-23`). Each half is at most `MAX_PROTOCOL_FEE = 1000` pips (0.1%) (`ProtocolFeeLibrary.sol:8`). Swap fee = `p + l − floor(p·l / 1_000_000)` (`calculateSwapFee`, `ProtocolFeeLibrary.sol:38-46`), used in `Pool.swap` as `protocolFee == 0 ? lpFee : calculateSwapFee(protocolFee, lpFee)` (`Pool.sol:286-307`). MATH §3 now defines the gross-up with this formula; depth reported to consumers stays net.
 
+### F-11 (M2) Behaviour observed while implementing the hook skeleton
+- **Hook reverts are wrapped.** A revert inside a hook callback surfaces from the PoolManager as `CustomRevert.WrappedError(hook, callbackSelector, reason, Hooks.HookCallFailed.selector)` (`lib/v4-core/src/libraries/Hooks.sol:137`). Tests assert the full wrapped bytes.
+- **`beforeInitialize` runs before the PoolManager's own "already initialised" check**, so a second initialisation of the single permitted key reverts with `PoolAlreadyBound`, not `PoolAlreadyInitialized`. Only one `PoolKey` can satisfy the hook (hooks address, fee, spacing and the sorted collateral/quote pair are all fixed), so D-2 binding is defence in depth and is tested as such.
+- **A zero-delta `modifyLiquidity` poke is routed to `beforeRemoveLiquidity`** (only `liquidityDelta > 0` is an add), so the hook-only rule also blocks external pokes (tested).
+- **Forge 1.8.4 clears transient storage between top-level calls of a test**; calls inside one external call share it (ADR-044).
+- **`new C{salt: s}()` in `forge script`**: in a dry run with `--sender` the CREATE2 was executed as from the sender, not through the deterministic deployer (ADR-040). The script therefore calls the deployer explicitly. The deployer proxy on chain 1301 is at the address in `config/addresses.json` and has code (asserted by the script).
+- **The real PositionManager at the 1301 address cannot mint into a Ballast pool**: the mint reverts with the wrapped `ExternalLiquidityForbidden` (`test/fork/HookOnlyLiquidityFork.t.sol`, fork block 68,788,256). A real PositionManager *remove* is unreachable by construction (it needs a position NFT, which cannot be minted); the remove callback is exercised with the deployed `PoolModifyLiquidityTest` router instead.
+
 ## Not verified / deferred
 - Behavioural proof of G-1 with the real `BallastHook` and with the PositionManager (as opposed to the test hook and the official test router): M2.
 - A funded testnet deployment of the real hook: M2 and M9.

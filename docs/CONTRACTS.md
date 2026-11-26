@@ -321,6 +321,10 @@ library Observations {
     function cumulativeNow(State storage s, uint40 nowTs, int24 currentTick) internal view returns (int56);
     /// Exact at snapshot times; linear interpolation between snapshots (error bound: MATH §4).
     function cumulativeAt(Observation[] storage self, State storage s, uint40 nowTs, uint32 secondsAgo, int24 currentTick) internal view returns (int56 cumulative, bool warm);
+    /// Same result as `cumulativeAt` for every hint (R-ORC-8, ADR-038); `next` is the cursor to store for this window.
+    struct Cursor { uint16 index; uint40 timestamp; }
+    function cumulativeAtHinted(Observation[] storage self, State storage s, uint40 nowTs, uint32 secondsAgo, int24 currentTick, Cursor memory hint) internal view returns (int56 cumulative, bool warm, Cursor memory next);
+    function twapTickHinted(Observation[] storage self, State storage s, uint40 nowTs, uint32 window, int24 currentTick, Cursor memory hint) internal view returns (int24 tick, bool warm, Cursor memory next);
     // Errors: TimeRegression(nowTs, lastSwapTs), ZeroWindow(), InvalidInitialization().
     function twapTick(Observation[] storage self, State storage s, uint40 nowTs, uint32 window, int24 currentTick) internal view returns (int24 tick, bool warm);
     /// True iff the oldest retained snapshot is at or before nowTs - window. Monotonic for window <= anchorWindow (R-ORC-7).
@@ -379,3 +383,21 @@ Document the final layout in `ARCHITECTURE.md` §7. Rules: pack `Vault` into at 
 ## 10. Gas notes
 
 Per-swap cost is the cost every trader pays; keep `beforeSwap` minimal (see TESTING §7 for budgets). Move anything view-heavy into the lens. Avoid reading more than one position per vault in swap paths; swap paths never read vault positions.
+
+---
+
+## M2 surface as implemented (differences from the plan above)
+
+| Item | As implemented in M2 | Difference from the earlier text |
+|---|---|---|
+| `IBallastPool` | New interface holding `config`, `poolId`, `collateralIsCurrency0`, `twapTick`, `stressInfo`, `lockState`, `pokeStress`. `IBallastHook` extends it. | These functions were listed directly on `IBallastHook`; they moved so M2 can implement a real, fully interfaced contract before the vault functions exist. |
+| `lockState()` on the hook | Added: returns the previewed state and `lockedUntil`. | New; the lens (M7) can delegate to it. |
+| `BallastHook` inheritance | `BaseHook, IBallastPool` (not yet `IBallastHook`) | `IBallastHook` is adopted in M3 when the vault functions land. |
+| Errors | `NotPoolManager` removed from `IBallastErrors` (declared by OpenZeppelin `BaseHook`); `PoolNotBound` added. | New / removed. |
+| `HookPermissions` library | `permissions()` and `flags()`; `getHookPermissions()` returns `permissions()` and `DeployBallast` mines with `flags()`. | New; one source for contract and script. |
+| `Transient` library | `get/set` over `tload/tstore`; slots `SWAPPED`, `VAULT_OP`, `LOCK`. | New. |
+| `Observations` | Adds `Cursor`, `cumulativeAtHinted`, `twapTickHinted`; `cumulativeAt` and `twapTick` are wrappers with an empty cursor. | New (ADR-038). |
+| `StressMachine` | Unchanged. The hook stores `StressStorage{state, stressStartedAt, belowExitSince, lockExpiryRecorded}` in one slot and two search cursors in another. | Storage plan. |
+| Guards | `_enterVaultOp()` (sets `VAULT_OP`, reverts if `SWAPPED`) and `nonReentrant` are internal and not yet used by any production function; M3 uses them. A test-only subclass (`test/utils/BallastHookHarness.sol`, never in `src/`) exposes them. | New; flagged by Slither as dead code until M3 (SLITHER_NOTES). |
+| Evaluation trigger | `beforeSwap` evaluates only when `Observations.update` wrote a snapshot (so at most once per interval); `pokeStress` always evaluates and also advances the oracle. | Refines R-STR-7(a)/(c) (ADR-042). |
+| Cold-start evaluation | While the anchor window is not covered, the write path skips the TWAP lookups (the machine ignores them, R-STR-6); views compute them. | Optimisation, no behavioural difference. |

@@ -146,6 +146,12 @@ contract TransientGuardsTest is HookFixture {
     }
 
     /// @custom:requirement R-TX-3
+    /// @custom:requirement R-TX-3
+    function test_Lock_IsReleasedWithinTheSameTransaction() public {
+        hook.guardedTwice();
+    }
+
+    /// @custom:requirement R-TX-3
     function test_Lock_IsReleasedAfterCall() public {
         hook.guardedCall();
         hook.guardedCall();

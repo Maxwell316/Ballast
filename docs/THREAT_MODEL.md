@@ -1,6 +1,6 @@
 # Ballast Threat Model
 
-**Status:** Draft v0.2 · Threats T1–T18. Companion to [SPEC](SPEC.md), [ARCHITECTURE](ARCHITECTURE.md). This document must be updated whenever a requirement, flow or parameter changes. It states residual risks plainly. It is not an audit.
+**Status:** Draft v0.2 · Threats T1–T19. Companion to [SPEC](SPEC.md), [ARCHITECTURE](ARCHITECTURE.md). This document must be updated whenever a requirement, flow or parameter changes. It states residual risks plainly. It is not an audit.
 
 ---
 
@@ -122,6 +122,12 @@ Capital for price manipulation, the ability to deposit as any actor, to run cont
 **Accepted for v1.** A spot-based fast trigger is a v2 option; it is manipulable and needs its own ADR (ADR-026).
 **Evidence:** the `ExitRace` scenario test quantifies how much matured-ticket liquidity can exit before the lock engages for given parameters.
 **Residual:** nonzero by design.
+
+### T19 — Swaps blocked or griefed through Ballast logic
+**Issue:** a hook that can revert in `beforeSwap` can block liquidations, which is the opposite of the product. Possible causes: an oracle overflow, a division by zero, an array bound, a stress-machine corner case, or the D-9 guard.
+**Mitigation:** `beforeSwap` reverts only with `VaultOpInSameTransaction`, which requires a vault operation earlier in the same transaction (the swapper's own transaction, never someone else's: transient storage is per transaction). The update and evaluation are total inside a stated domain (R-STR-10, R-ORC-9, ADR-039); thresholds are validated at construction; cursor lookups fall back to a binary search on any doubt.
+**Evidence:** `BeforeSwapTotality` invariant and fuzz test (ticks written straight into slot0 including MIN/MAX, zero and multi-year time steps, every stress state), `LiquidationDuringStress` scenario (a liquidation-sized sell executes in STRESS, RECOVERING and after lock expiry), `TransientGuards` tests.
+**Residual:** a chain with a clock beyond year 3000 (outside the oracle domain). A `block.timestamp` that moves backwards would revert `Observations.update` with `TimeRegression`; EVM chains do not do this, and Unichain's sequencer produces non-decreasing timestamps (T14).
 
 ## 5. Design-level safety properties
 

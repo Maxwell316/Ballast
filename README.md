@@ -4,7 +4,7 @@
 
 Ballast is a Uniswap v4 hook that lets curators commit liquidity to the price band where liquidations will sell, locks that liquidity against withdrawal while the market is under stress, and publishes the committed depth on-chain so lending risk models can size collateral caps from depth that is actually guaranteed.
 
-> Status: under development. Testnet only. Unaudited. See [SECURITY.md](SECURITY.md).
+> Status: under development (milestone M2 of 11: hook skeleton, oracle and stress machine; no vaults yet). Testnet only. Unaudited. See [SECURITY.md](SECURITY.md).
 
 ---
 

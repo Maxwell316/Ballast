@@ -74,6 +74,12 @@ contract BallastHookHarness is BallastHook, IUnlockCallback {
         }
     }
 
+    /// @notice Two sequential guarded calls in ONE transaction: the lock must be released after the first.
+    function guardedTwice() external {
+        this.guardedCall();
+        this.guardedCall();
+    }
+
     function setProbeReentrancy(bool on) external {
         probeReentrancy = on;
     }

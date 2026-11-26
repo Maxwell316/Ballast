@@ -191,6 +191,43 @@ Append-only. Each entry: Context, Decision, Consequences, Status. Changing an ac
 **Status:** Accepted
 **Decision:** SPEC §14 is now R-CFG-1 and additionally requires `sponsor != address(0)` (a zero sponsor would permanently disable standby funding). The `stressExit < stressEnter` check after bps→tick rounding needs no extra code: consecutive bps differ by at least `1/ln(1.0001) ≈ 1.0001` ticks, so exit < enter in bps implies `round(Δ(exit)) < round(Δ(enter))`; `BandMath.t.sol` verifies it for every enter in [51, 2500].
 
+## ADR-038 — Oracle evaluation gas: measurements, and search cursors
+**Status:** Accepted (human decision rule, M2 approval: accept if the evaluation path is at or under about 100k; otherwise add monotone cursors with a binary-search fallback, differential-tested)
+**Context:** M1 estimated about 85k gas for two binary searches alone. M2 measured the real `beforeSwap` through `PoolManager.swap` (`test/gas/BeforeSwapGas.t.sol`, gas inside `_beforeSwap`, storage cold via `vm.cool`, forge 1.8.4, cardinality 1,585, interval 60 s).
+**Measurements (before cursors):** no update (same timestamp) 4.7k; update only 8.7k; update + snapshot + evaluation, cold oracle 52k; warm, ring filling (push) **113k**; warm, wrapped ring **97k**.
+**Decision:** the warm, ring-filling path was over 100k, so monotone cursors were implemented (R-ORC-8): one cursor per window (anchor and short), validated by slot content and timestamp, walk of at most 4 snapshots, fallback to binary search. `test/fuzz/ObservationsCursor.t.sol` differential-tests the hinted lookup against the binary search over fuzzed histories with wraparound, long gaps, garbage and stale cursors.
+**Measurements (after cursors):** warm ring-filling 84.6k, wrapped steady state 68.4k (TESTING §7). Budget amended: steady state < 80k (met), the first ring fill (the first `cardinality` snapshots, about 26 h at defaults) ≤ 90k; common paths < 30k (met).
+**Consequences:** two extra cursors (112 bits, one slot) written at each evaluation (about 5k). A stale or zeroed cursor costs one full binary search, never a wrong answer.
+
+## ADR-039 — `beforeSwap` totality (R-STR-10) and the oracle domain
+**Status:** Accepted (human decision, M2 approval)
+**Decision:** swaps cannot be blocked by Ballast. `beforeSwap` reverts only for the D-9 guard. The oracle, evaluation and transition are total inside a stated domain (R-ORC-9): `block.timestamp < 2^40` and under about 1,286 years of history, so the `int56` accumulator cannot overflow (MATH §4). We chose to state the domain instead of wrapping arithmetic or catching reverts: a `try/catch` around the update would hide real bugs and leave oracle state inconsistent, and wrapping would silently corrupt TWAPs. Evidence: the `BeforeSwapTotality` invariant (arbitrary ticks including MIN/MAX written straight into the PoolManager's slot0, zero and huge time steps, all stress states, three entry points) and a fuzz test over starting pools, the `LiquidationDuringStress` scenario, and the legal-transition check (INV-12).
+**Consequences:** the proof obligation is the domain statement. A chain with a clock beyond year 3000 is out of scope.
+
+## ADR-040 — Deployment script deploys the hook with an explicit call to the CREATE2 deployer
+**Status:** Accepted
+**Context:** the first M2 dry run failed the script's own flag check: with `new BallastHook{salt: s}(...)` the dry run created the hook as a CREATE2 from the *sender*, not through the deterministic deployer, so the address differed from the one mined for `CREATE2_FACTORY` (observed: predicted `0x5b78…ba80`, created `0x38aE…Ce66`, which equals CREATE2 from the sender with the same salt and init code). Whether Foundry reroutes `new{salt}` differs between dry run and broadcast.
+**Decision:** the script calls the deployer proxy explicitly (`create2Deployer.call(salt ++ initcode)`), then asserts the code exists at the mined address and that the address flags equal `getHookPermissions()`. `test/fork/DeployBallastScript.t.sol` runs the real script on a fork of chain 1301.
+**Consequences:** the address no longer depends on Foundry's routing; the script needs the deployer proxy to exist on the chain (asserted).
+
+## ADR-041 — `HookPermissions` is the single definition of the permission set
+**Status:** Accepted
+**Decision:** `HookPermissions.permissions()` and `flags()` are used by `BallastHook.getHookPermissions()` and by `DeployBallast`, so the contract and the mining flags cannot drift. The test suite derives the mask independently (`HookCallbacks.t.sol::_mask`, and per-flag checks in `HookPermissions.t.sol`).
+
+## ADR-042 — Evaluation triggers: snapshot-gated in `beforeSwap`, `pokeStress` advances the oracle
+**Status:** Accepted
+**Decision:** `beforeSwap` evaluates stress only when the update wrote a snapshot, which rate-limits evaluation to once per `observationInterval` without a second timer. `pokeStress` always evaluates and also calls `Observations.update` with the current tick: this is exact (price changes only at swaps), so the accumulator and snapshots progress through swap droughts and anyone can keep the oracle warm. While the anchor window is not covered, the write path skips the TWAP lookups; views always compute them.
+**Consequences:** SPEC R-STR-7 clarified. No behavioural difference for the machine.
+
+## ADR-043 — Second reference for `StressMachine`
+**Status:** Accepted (human decision, M2 approval)
+**Decision:** `tools/gen_stress_vectors.py` (dated 2026-11-26, seed 20261126) generates 300 event-driven timelines (10,410 evaluation points) from the SPEC text only, with a history-recomputing structure unlike the carried-timer Solidity; `test/vectors/stress_machine.json` is committed and replayed by `test/fuzz/StressMachineVectors.t.sol`. Result: 0 disagreements; the vectors contain 267 RECOVERING→CALM transitions, 1,118 relapses and 491 `LockExpired` emissions.
+**Independence caveat:** both references were written by the same author, so the structure is independent but the reading of the SPEC is not. Two readings the SPEC states only implicitly are recorded here for the human to confirm: (1) a dev between the thresholds interrupts an in-progress calm period (R-STR-3 "held continuously"); (2) in STRESS, a dev between the thresholds keeps STRESS. One wording difference was found between SPEC and code (R-STR-5 said the expiry flag is cleared on entering STRESS; the code clears it on every transition into CALM); they are observationally equivalent, and SPEC was reworded.
+
+## ADR-044 — Test-only subclass and Foundry transient-storage behaviour
+**Status:** Accepted
+**Decision:** the D-9 guard helpers and the reentrancy lock are `internal`, with no production caller until M3. A test-only subclass `BallastHookHarness` (in `test/utils`, never in `src/`, so nothing is compiled out of the release bytecode) exposes them, provides the hook's own liquidity entry points used as a stand-in for vault operations, and measures gas. Forge 1.8.4 clears transient storage between top-level calls of a test (verified: probe test, identical results with `--isolate`), so "guard resets between transactions" is testable with separate calls; `test_ProbeSeesSeparateTransactions` fails loudly if a future Foundry stops doing that.
+
 ## Carry-forward note for M3 (re-range dust)
 The fork test showed that removing liquidity rounds amounts down and adding rounds up, so recovered tokens do not exactly refund the same liquidity. `rerange` must therefore not assume it can re-add the removed liquidity from the recovered tokens alone. The M3 plan must propose: how a shortfall of a few wei per position and currency is funded from `idle`; what happens when idle is insufficient (revert with a clear error versus reducing liquidity); who bears the cumulative dust loss (shareholders, pro rata, since no actor is charged); and a test that the loss is bounded per re-range.
 
@@ -211,7 +248,7 @@ The fork test showed that removing liquidity rounds amounts down and adding roun
 
 | Topic | Result |
 |---|---|
-| Hook self-call callback skip | Confirmed in source (F-2); behavioural test due in M2 |
+| Hook self-call callback skip | Confirmed in source (F-2); behavioural tests on a local and a forked PoolManager (M2: `HookCallbacks.t.sol`, `HookOnlyLiquidityFork.t.sol`) |
 | Permission bit order on target chain | Bytecode identical to Ethereum mainnet PoolManager; init bits proven by fork probe; remaining bits due M2/M9 (F-3) |
 | ERC-6909 base | v4-core `ERC6909` with own `totalSupply` via `_mint`/`_burn` overrides (F-4) |
 | Compiler and EVM | 0.8.26 and `cancun` build; `TLOAD` works on chain 1301 (F-5) |

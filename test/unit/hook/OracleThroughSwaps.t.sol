@@ -114,15 +114,29 @@ contract OracleThroughSwapsTest is HookFixture {
         _checkTwap(3600);
     }
 
+    /// @dev The bound of MATH §4 is `interval * swing / window` where `swing` is the tick swing over the bracket
+    /// `[a, b]` of snapshots around the window start (not over the window: the bracket can be hours long and begin
+    /// before the window). Finds the bracket from the retained snapshots.
     function _checkTwap(uint32 window) internal view {
         (int24 got, bool warm) = hook.twapTick(window);
         if (!warm) return;
         int256 exact = model.twap(block.timestamp, window);
         int256 diff = int256(got) - exact;
         uint256 err = uint256(diff < 0 ? -diff : diff);
-        uint256 swing =
-            model.swing(block.timestamp - window - cfg.observationInterval, block.timestamp);
-        // MATH §4: error <= ceil(interval * swing / window) + 1 (the +1 covers floor rounding).
+        uint256 target = block.timestamp - window;
+        uint256 aTs;
+        uint256 bTs = hook.obsState().lastSwapTs;
+        for (uint256 i; i < hook.obsLength(); ++i) {
+            uint256 ts = _logicalSnapshot(i).timestamp;
+            if (ts <= target) {
+                aTs = ts;
+            } else {
+                bTs = ts;
+                break;
+            }
+        }
+        uint256 swing = model.swing(aTs, bTs);
+        // error <= ceil(interval * swing / window) + 1 (the +1 covers floor rounding)
         uint256 bound_ = (uint256(cfg.observationInterval) * swing + window - 1) / window + 1;
         assertLe(err, bound_, "TWAP within documented bound");
     }

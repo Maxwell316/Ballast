@@ -89,7 +89,7 @@ Run key flows on the target chain's PoolManager at a pinned block. Skip with a c
 ## 4a. Library test conventions (M1 onwards)
 - **Decimals and ordering matrix.** The default fixture is collateral 18 decimals and quote 6. Library and differential tests also run (a) collateral 6 and quote 18, (b) equal decimals, and (c) both currency orderings (collateral as currency0 and as currency1). Every band and depth test covers both collateral directions. The start tick for a 1:1 human price is derived from the decimals (see `test/utils/Scenario.sol`).
 - **Requirement tags.** Every test carries `@custom:requirement R-…` (and `@custom:invariant INV-n` where relevant). `tools/compliance.py` reads them and reports which SPEC requirements have no test (`docs/COMPLIANCE.md`). It reports only, until the suite is complete.
-- **Coverage gate.** Until M2 the gate covers `src/libraries/` only (≥ 95% lines, ≥ 90% branches); from M2 it covers all of `src/`.
+- **Coverage gate.** The gate covers all of `src/` (≥ 95% lines, ≥ 90% branches) from the end of M2. CI runs the instrumented coverage with the default (not the CI) fuzz profile.
 - **Mutation sanity check.** After each library's tests pass, a scratch change breaks its rounding direction, bounds or comparison and at least one test must fail; the mutations tried and the tests that caught them are recorded in the milestone report. Scratch changes are reverted.
 - **Gas.** `test/gas/` measures each oracle path with cold storage and records them in `.gas-snapshot` and in this document. `beforeSwap` may do only the O(1) accumulator update plus at most one snapshot write per interval; the binary search runs only on the evaluation path and in views.
 
@@ -135,7 +135,36 @@ Targets (measure, record in `.gas-snapshot`, justify regressions above 5%):
 | `twapTick`, 24 h window, full ring (1,585 slots) | 44,037 | binary search |
 | `twapTick`, 15 min window, full ring | 40,874 | binary search |
 
-**Finding for M2:** stress evaluation needs two TWAPs (anchor and short), about 85k gas of binary search alone, which exceeds the 80k target for `beforeSwap` with an observation write and stress evaluation (§7) once the PoolManager `slot0` read and the write are added. The O(1) paths fit comfortably. Proposed mitigations to decide in M2, after measuring the real `beforeSwap`: (a) monotone cursors for the anchor and short targets (the target `now - window` only moves forward, so the bracketing snapshot advances monotonically and lookup becomes amortized O(1)); (b) a galloping search from the newest snapshot for the short window. Per-path numbers are in `.gas-snapshot` (`forge snapshot --match-path "test/gas/*"`; ring fills happen in `setUp`).
+### `beforeSwap` gas, measured through `PoolManager.swap` (M2; `test/gas/BeforeSwapGas.t.sol`, ADR-038)
+Gas inside `_beforeSwap` (probe in the test-only harness), storage cold (`vm.cool`), forge 1.8.4, cardinality 1,585, interval 60 s, 24 h anchor window.
+
+| Path | Before cursors | With cursors | Budget |
+|---|---|---|---|
+| same timestamp as the last swap (no update) | 4.7k | 4.7k | < 30k |
+| update only (new timestamp, no snapshot due) | 8.7k | 8.7k | < 30k |
+| update + snapshot + evaluation, cold oracle (anchor window not covered) | 52k | 51k | < 80k |
+| update + snapshot (push) + evaluation, warm, ring still filling | 113k | **85k** | ≤ 90k (first `cardinality` snapshots only, about 26 h at defaults) |
+| update + snapshot (overwrite) + evaluation, warm, wrapped ring (steady state) | 97k | **68k** | < 80k |
+
+Library level (`test/fuzz/ObservationsCursor.t.sol`): one 24 h-window lookup on a full ring costs 41.9k with binary search and 17.8k from a cursor one interval later. Budget amended from the original "< 80k with write and evaluation" to the two rows above (ADR-038). The `BallastHook` runtime size is 13.5 kB of 24.6 kB.
+
+## 7a. M2 test inventory
+| Suite | What it proves |
+|---|---|
+| `unit/hook/HookCallbacks` (22) | init restrictions (non-initializer, wrong fee, wrong spacing, dynamic fee, native currency0 and currency1, wrong pair, hooks field, second init, non-PoolManager caller), binding, collateral side both orderings, oracle seed, G-1 add/remove/poke through a plain router, hook self-call bypass, donate, mined CREATE2 address, flags equal permissions |
+| `unit/hook/OracleThroughSwaps` (6) | same-timestamp double swap accumulates once, in-block round trip has no weight, sparse swaps exact, fuzzed real-swap history vs the naive model (accumulator, every snapshot, increasing timestamps, TWAP bound over the true bracket), adversarial swap timing (non-vacuous: error > 0 and within bound), cold to warm |
+| `unit/hook/StressEvaluation` (9) | cold oracle stays CALM, lazy evaluation and pure-preview views, full episode with each event once, lock expiry once and no re-arm and new episode after CALM, collateral as currency1 mirrored, no stress against the liquidation direction, evaluation once per interval, permissionless poke |
+| `unit/hook/TransientGuards` (9) | swap-then-vault-op and vault-op-then-swap revert (single transaction), flags do not outlive a transaction, lock released, reentrancy reverts, probe that tests are separate transactions |
+| `invariant/BeforeSwapTotality` (3) | R-STR-10: 256 runs x 128 calls (32,768) plus 300 fuzz sequences over starting pools: `beforeSwap`, `pokeStress` and views never revert; only legal transitions; view equals stored state after a poke |
+| `scenario/LiquidationDuringStress` (4) | a liquidation-sized sell executes in STRESS, RECOVERING, after expiry and in the evaluating transaction |
+| `fuzz/ObservationsCursor` (7) | hinted lookup equals binary search across fuzzed histories with wraparound, gaps, garbage and stale cursors; cursor is much cheaper |
+| `fuzz/StressMachineVectors` (1) | second, SPEC-only reference: 300 timelines, 10,410 evaluation points, 0 disagreements |
+| `fork/HookOnlyLiquidityFork` (5), `fork/DeployBallastScript` (1) | real PositionManager and deployed routers cannot add/remove; hook self-call works; swap through the deployed router writes the oracle; the real deployment script on a fork |
+
+Test-only code: `test/utils/BallastHookHarness.sol` (subclass exposing the guards, the hook's own liquidity entry points and a gas probe) never enters `src/` (ADR-044).
+
+## 7b. Aliasing review (M2)
+Searched `src/` and `test/` for memory-struct assignments and storage-to-memory copies assumed independent. Findings: (1) `Observations.cumulativeAtHinted`: `next = hint` aliased the caller's cursor; harmless today (nobody mutates it) but fragile; now an explicit copy. (2) `test/fuzz/StressMachine.fuzz.t.sol::_ref`: `o = r` aliased the reference model's input and mutated it in place; benign in the current branch order but the same class as the `nc = c` bug; now an explicit copy, all fuzz tests still pass. (3) Storage-to-memory copies (`StressStorage memory st = _stress`, `Observations.State memory st = s`, `PoolKey memory k = key` in tests) are genuine copies in Solidity and are independent; the writes back are field by field. No other hazards. Rule for M3 onwards: never assign one memory struct to another; construct a new one.
 
 ## 8. Requirement-to-test starter map
 

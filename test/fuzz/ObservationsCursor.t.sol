@@ -158,4 +158,47 @@ contract ObservationsCursorTest is Test {
         _assertSame(t, 35, 1, Observations.Cursor(0, 0));
         _assertSame(t, 35, 1, Observations.Cursor(3, t)); // timestamp after the target
     }
+
+    /// @notice A hint that is a real snapshot but lies AFTER the target must be ignored (the walk only moves forward).
+    /// @custom:requirement R-ORC-8
+    function test_ValidSlotButTimestampAfterTarget_IsIgnored() public {
+        h = new ObservationsHarness();
+        h.initialize(1000, 0, 10);
+        uint40 t = 1000;
+        for (uint256 i; i < 8; ++i) {
+            t += 10;
+            h.update(t, int24(int256(i)), 10);
+        }
+        // A genuine cursor on the newest snapshot, used for a target well before it.
+        Observations.State memory st = h.state();
+        Observations.Cursor memory newest = Observations.Cursor(st.index, h.at(st.index).timestamp);
+        _assertSame(t, 60, 3, newest);
+    }
+
+    /// @notice The cursor is effective, not just correct: in steady state (one evaluation per interval on a full
+    /// ring) the hinted lookup costs well under half of the binary search. This kills "correct but useless" bugs
+    /// (a cursor that is never valid, or that is stored wrongly, silently degrades to the binary search).
+    /// @custom:requirement R-ORC-8
+    function test_Cursor_IsMuchCheaperThanBinarySearch_InSteadyState() public {
+        uint32 interval = 60;
+        h = new ObservationsHarness();
+        h.initialize(1000, 0, 1585);
+        uint40 t = 1000;
+        for (uint256 i; i < 1700; ++i) {
+            t += interval;
+            h.update(t, int24(int256(i % 50)), interval);
+        }
+        uint32 window = 86_407; // off the snapshot grid, so the target is strictly between snapshots
+        (,, Observations.Cursor memory cur) =
+            h.cumulativeAtHinted(t, window, 7, Observations.Cursor(0, 0));
+        t += interval;
+        h.update(t, 3, interval);
+        vm.cool(address(h));
+        uint256 plain = h.gasPlain(t, window, 7);
+        vm.cool(address(h));
+        uint256 hinted = h.gasHinted(t, window, 7, cur);
+        emit log_named_uint("binary search gas (24h window, full ring)", plain);
+        emit log_named_uint("cursor gas (one interval later)", hinted);
+        assertLt(hinted * 2, plain, "cursor must cost less than half of the binary search");
+    }
 }

@@ -82,6 +82,27 @@ contract ObservationsHarness {
         used = g - gasleft();
     }
 
+    function gasHinted(
+        uint40 nowTs,
+        uint32 secondsAgo,
+        int24 currentTick,
+        Observations.Cursor memory hint
+    ) external view returns (uint256 used) {
+        uint256 g = gasleft();
+        Observations.cumulativeAtHinted(obs, s, nowTs, secondsAgo, currentTick, hint);
+        used = g - gasleft();
+    }
+
+    function gasPlain(uint40 nowTs, uint32 secondsAgo, int24 currentTick)
+        external
+        view
+        returns (uint256 used)
+    {
+        uint256 g = gasleft();
+        Observations.cumulativeAt(obs, s, nowTs, secondsAgo, currentTick);
+        used = g - gasleft();
+    }
+
     function gasCumulativeNow(uint40 nowTs, int24 currentTick)
         external
         view
