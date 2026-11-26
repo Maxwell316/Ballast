@@ -11,6 +11,7 @@ import {ConfigFixture} from "../../utils/ConfigFixture.sol";
 import {BallastHookHarness} from "../../utils/BallastHookHarness.sol";
 import {IBallastErrors} from "../../../src/interfaces/IBallastErrors.sol";
 import {MockERC20} from "../../utils/MockERC20.sol";
+import {BallastVaults} from "../../../src/BallastVaults.sol";
 
 /// @dev One external call = one transaction. Used to put a swap and a vault operation in a single transaction.
 contract TxProbe {
@@ -18,20 +19,25 @@ contract TxProbe {
         PoolSwapTest router,
         PoolKey memory key,
         bool zeroForOne,
-        BallastHookHarness h
+        BallastVaults v
     ) external {
         _swap(router, key, zeroForOne);
-        h.enterVaultOpForTest();
+        _vaultOp(v);
     }
 
     function vaultOpThenSwap(
         PoolSwapTest router,
         PoolKey memory key,
         bool zeroForOne,
-        BallastHookHarness h
+        BallastVaults v
     ) external {
-        h.enterVaultOpForTest();
+        _vaultOp(v);
         _swap(router, key, zeroForOne);
+    }
+
+    /// @dev A real guarded vault operation: a deposit of 1e6 shares into vault 1.
+    function _vaultOp(BallastVaults v) internal {
+        v.deposit(1, 1e6, type(uint128).max, type(uint128).max, address(this));
     }
 
     function twoSwaps(PoolSwapTest router, PoolKey memory key) external {
@@ -39,9 +45,9 @@ contract TxProbe {
         _swap(router, key, false);
     }
 
-    function twoVaultOps(BallastHookHarness h) external {
-        h.enterVaultOpForTest();
-        h.enterVaultOpForTest();
+    function twoVaultOps(BallastVaults v) external {
+        _vaultOp(v);
+        _vaultOp(v);
     }
 
     function _swap(PoolSwapTest router, PoolKey memory key, bool zeroForOne) private {
@@ -72,18 +78,21 @@ contract TransientGuardsTest is HookFixture {
 
     function setUp() public {
         _setUpDefault(true, ConfigFixture.prodLike(), 0);
-        hook.modifyForTest(-6000, 6000, 1e19, bytes32(uint256(1)));
+        _provide(-6000, 6000, 1e19);
         probe = new TxProbe();
         collateral.mint(address(probe), 1e24);
         quote.mint(address(probe), 1e24);
         vm.startPrank(address(probe));
         collateral.approve(address(swapRouter), type(uint256).max);
         quote.approve(address(swapRouter), type(uint256).max);
+        collateral.approve(address(vaults), type(uint256).max);
+        quote.approve(address(vaults), type(uint256).max);
         vm.stopPrank();
 
         // Probe: does a flag set by one call survive to the next call of this test?
-        hook.enterVaultOpForTest();
-        (, bool stillSet,) = hook.flags();
+        vm.prank(address(vaults));
+        hook.enterVaultOp();
+        (, bool stillSet) = hook.flags();
         separateTx = !stillSet;
     }
 
@@ -99,9 +108,9 @@ contract TransientGuardsTest is HookFixture {
     /// @custom:requirement R-TX-2
     function test_RevertWhen_SwapThenVaultOp_InOneTransaction() public {
         vm.expectRevert(IBallastErrors.SwapInSameTransaction.selector);
-        probe.swapThenVaultOp(swapRouter, key, true, hook);
+        probe.swapThenVaultOp(swapRouter, key, true, vaults);
         vm.expectRevert(IBallastErrors.SwapInSameTransaction.selector);
-        probe.swapThenVaultOp(swapRouter, key, false, hook);
+        probe.swapThenVaultOp(swapRouter, key, false, vaults);
     }
 
     /// @custom:requirement R-TX-1
@@ -111,21 +120,22 @@ contract TransientGuardsTest is HookFixture {
             abi.encodeWithSelector(IBallastErrors.VaultOpInSameTransaction.selector)
         );
         vm.expectRevert(wrapped);
-        probe.vaultOpThenSwap(swapRouter, key, true, hook);
+        probe.vaultOpThenSwap(swapRouter, key, true, vaults);
     }
 
     function test_TwoSwaps_AndTwoVaultOps_InOneTransaction_AreFine() public {
         probe.twoSwaps(swapRouter, key);
-        probe.twoVaultOps(hook);
+        probe.twoVaultOps(vaults);
     }
 
     // ─── guards do not outlive the transaction ───
 
     /// @custom:requirement R-TX-1
     function test_VaultOpFlag_DoesNotBlockSwapInLaterTransaction() public {
-        hook.enterVaultOpForTest(); // transaction A
+        vm.prank(address(vaults));
+        hook.enterVaultOp(); // transaction A
         _swap(true, 1e6); // transaction B
-        (bool swapped, bool vaultOp,) = hook.flags();
+        (bool swapped, bool vaultOp) = hook.flags();
         assertFalse(swapped, "SWAPPED cleared after its transaction");
         assertFalse(vaultOp);
     }
@@ -133,29 +143,15 @@ contract TransientGuardsTest is HookFixture {
     /// @custom:requirement R-TX-2
     function test_SwapFlag_DoesNotBlockVaultOpInLaterTransaction() public {
         _swap(true, 1e6); // transaction A
-        hook.enterVaultOpForTest(); // transaction B
+        vm.prank(address(vaults));
+        hook.enterVaultOp(); // transaction B
     }
 
-    // ─── reentrancy ───
+    // ─── access ───
 
-    /// @custom:requirement R-TX-3
-    function test_RevertWhen_Reentrant() public {
-        hook.setProbeReentrancy(true);
-        vm.expectRevert(IBallastErrors.Reentrancy.selector);
-        hook.guardedCall();
-    }
-
-    /// @custom:requirement R-TX-3
-    /// @custom:requirement R-TX-3
-    function test_Lock_IsReleasedWithinTheSameTransaction() public {
-        hook.guardedTwice();
-    }
-
-    /// @custom:requirement R-TX-3
-    function test_Lock_IsReleasedAfterCall() public {
-        hook.guardedCall();
-        hook.guardedCall();
-        (,, bool lock) = hook.flags();
-        assertFalse(lock);
+    /// @custom:requirement R-SPLIT-1
+    function test_RevertWhen_EnterVaultOp_CalledByNonVaults() public {
+        vm.expectRevert(abi.encodeWithSelector(IBallastErrors.NotVaults.selector, address(this)));
+        hook.enterVaultOp();
     }
 }

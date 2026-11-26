@@ -9,7 +9,7 @@ import {ConfigFixture} from "../utils/ConfigFixture.sol";
 contract BeforeSwapGasTest is HookFixture {
     function setUp() public {
         _setUpDefault(true, ConfigFixture.prodLike(), 0);
-        hook.modifyForTest(-6000, 6000, 1e18, bytes32(uint256(1)));
+        _provide(-6000, 6000, 1e18);
     }
 
     function _measure() internal returns (uint256) {

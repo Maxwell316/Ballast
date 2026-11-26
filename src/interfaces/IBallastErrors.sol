@@ -6,6 +6,7 @@ pragma solidity 0.8.26;
 interface IBallastErrors {
     error NotCurator(address caller);
     error NotSponsor(address caller);
+    error NotVaults(address caller);
     error PoolInitializerOnly(address caller);
     error PoolAlreadyBound();
     /// @notice A pool-dependent call was made before `beforeInitialize` bound the pool.

@@ -18,7 +18,8 @@ import {SwapParams} from "@uniswap/v4-core/src/types/PoolOperation.sol";
 import {MockERC20} from "./MockERC20.sol";
 import {ConfigFixture} from "./ConfigFixture.sol";
 import {BallastHookHarness} from "./BallastHookHarness.sol";
-import {Config} from "../../src/types/Types.sol";
+import {BallastVaults} from "../../src/BallastVaults.sol";
+import {Config, Range} from "../../src/types/Types.sol";
 
 /// @notice Shared fixture: a real local PoolManager, mock tokens in a chosen decimals/ordering scenario, and a
 /// `BallastHookHarness` placed at an address carrying exactly Ballast's five flags (via `deployCodeTo`, because the
@@ -39,6 +40,7 @@ abstract contract HookFixture is Test {
     MockERC20 internal collateral;
     MockERC20 internal quote;
     BallastHookHarness internal hook;
+    BallastVaults internal vaults;
     PoolKey internal key;
     PoolId internal pid;
     Config internal cfg;
@@ -70,6 +72,7 @@ abstract contract HookFixture is Test {
             "BallastHookHarness.sol:BallastHookHarness", abi.encode(address(pm), c), HOOK_ADDR
         );
         hook = BallastHookHarness(HOOK_ADDR);
+        vaults = BallastVaults(hook.vaults());
         (Currency c0, Currency c1) =
             collateralIs0 ? (c.collateral, c.quote) : (c.quote, c.collateral);
         key = PoolKey(c0, c1, c.fee, c.tickSpacing, IHooks(HOOK_ADDR));
@@ -93,6 +96,18 @@ abstract contract HookFixture is Test {
         quote.mint(address(this), 1e30);
         collateral.approve(address(swapRouter), type(uint256).max);
         quote.approve(address(swapRouter), type(uint256).max);
+        collateral.approve(address(vaults), type(uint256).max);
+        quote.approve(address(vaults), type(uint256).max);
+    }
+
+    /// @dev Provides liquidity through the real custody path: a one-position vault seeded by this contract.
+    function _provide(int24 lo, int24 hi, uint128 liq) internal returns (uint256 vaultId) {
+        Range[] memory r = new Range[](1);
+        r[0] = Range(lo, hi);
+        vaultId = vaults.createVault(r, 0, 0);
+        uint128[] memory l = new uint128[](1);
+        l[0] = liq;
+        vaults.seed(vaultId, l, type(uint128).max, type(uint128).max, address(this));
     }
 
     function _tick() internal view returns (int24 t) {

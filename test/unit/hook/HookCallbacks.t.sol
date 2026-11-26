@@ -275,7 +275,7 @@ contract HookCallbacksTest is HookFixture {
     /// @custom:guarantee G-1
     function test_RevertWhen_ExternalRemoveLiquidity_PlainRouter() public {
         _fullSetUp(true);
-        hook.modifyForTest(-600, 600, 1e18, bytes32(uint256(1)));
+        _provide(-600, 600, 1e18);
         bytes memory expected = _wrapped(
             IHooks.beforeRemoveLiquidity.selector,
             abi.encodeWithSelector(IBallastErrors.ExternalLiquidityForbidden.selector)
@@ -286,26 +286,26 @@ contract HookCallbacksTest is HookFixture {
         liqRouter.modifyLiquidity(key, ModifyLiquidityParams(-600, 600, 0, 0), "");
     }
 
-    /// @notice The hook's own liquidity changes bypass its callbacks (R-LIQ-4) and the position is owned by it
+    /// @notice The vaults contract's liquidity passes the gate and the position is owned by the vaults, not the hook
     /// (R-LIQ-3, INV-1).
     /// @custom:guarantee G-1
-    function test_HookSelfCall_AddsAndRemovesLiquidity_BypassingCallbacks() public {
+    /// @custom:invariant INV-1
+    function test_VaultsAdd_PassesGate_AndOwnsPosition() public {
         _fullSetUp(true);
-        bytes32 salt = bytes32(uint256(1 << 8 | 0));
-        hook.modifyForTest(-600, 600, 5e17, salt);
-        bytes32 posKey = Position.calculatePositionKey(address(hook), -600, 600, salt);
-        assertEq(IPoolManager(address(pm)).getPositionLiquidity(pid, posKey), 5e17, "owned by hook");
-        // The router's own key for the same range holds nothing.
+        uint256 v = _provide(-600, 600, 5e17);
+        bytes32 salt = bytes32(v << 8);
+        bytes32 posKey = Position.calculatePositionKey(address(vaults), -600, 600, salt);
+        assertEq(IPoolManager(address(pm)).getPositionLiquidity(pid, posKey), 5e17, "owned by vaults");
+        bytes32 hookKey = Position.calculatePositionKey(address(hook), -600, 600, salt);
+        assertEq(IPoolManager(address(pm)).getPositionLiquidity(pid, hookKey), 0, "hook owns nothing");
         bytes32 routerKey = Position.calculatePositionKey(address(liqRouter), -600, 600, salt);
         assertEq(IPoolManager(address(pm)).getPositionLiquidity(pid, routerKey), 0);
-        hook.modifyForTest(-600, 600, -2e17, salt);
-        assertEq(IPoolManager(address(pm)).getPositionLiquidity(pid, posKey), 3e17);
     }
 
     /// @notice Donations are not restricted (R-LIQ-5): the hook has no donate flag.
     function test_Donate_IsNotRestricted() public {
         _fullSetUp(true);
-        hook.modifyForTest(-600, 600, 1e18, bytes32(uint256(1)));
+        _provide(-600, 600, 1e18);
         PoolDonateTest donor = new PoolDonateTest(pm);
         collateral.approve(address(donor), type(uint256).max);
         quote.approve(address(donor), type(uint256).max);

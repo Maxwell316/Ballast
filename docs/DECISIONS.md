@@ -270,8 +270,18 @@ The fork test showed that removing liquidity rounds amounts down and adding roun
 - Size protocol: both runtime sizes stay below 23,800 bytes. If the vaults exceed it, the standby fund and accrual move to a third contract `BallastStandby` under the rules in ADR-046 (written with measurements first). No further splits without maintainer approval. No `delegatecall`, proxies or dispatcher mega-functions.
 **Consequences:** each liquidity operation now also triggers a hook callback (gas up; re-measured in TESTING). `previewDeposit`/`previewRedeem` move to the lens (estimates). Mining and the manifest cover two addresses.
 
-## ADR-046 — Compiler settings and the third-contract rule
-_Filled after measuring the split (see the size table in TESTING.md)._
+## ADR-046 — Compiler settings, `BallastStandby`, and the size/initcode measurements
+**Context:** After the ADR-045 split the sizes were measured with `forge build --sizes` (solc 0.8.26, cancun, `optimizer = true`, `optimizer_runs = 200`; `via_ir` needed for stack depth in the vault operations).
+
+| Build | Hook runtime | Hook initcode | Vaults runtime | Vaults initcode | Standby runtime |
+|---|---|---|---|---|---|
+| Split custody, legacy pipeline | 14,556 | 56,277 | 34,668 | 37,068 | n/a |
+| Split custody, `via_ir` | 14,027 | 50,052 | 29,912 | 32,060 | n/a |
+| + `BallastStandby` (fund, rate, accrual), `via_ir` | 14,027 | 53,457 | 28,959 | 35,465 | 3,105 |
+
+Limits: runtime 23,800 (24,576 hard); hook initcode 49,152 (EIP-3860), margin target 3,000.
+**Findings:** (1) `via_ir` is needed (stack-too-deep in the vault operations) and is 13% smaller than legacy; `optimizer_runs = 1` gained nothing. (2) The standby split lowered the vaults runtime by only 953 bytes while *raising* the hook's initcode by 3,405, because the hook's initcode embeds the vaults' creation code, which embeds the standby's. (3) The vaults runtime is still 5.2 KB over, and the hook initcode is 4.3 KB over the EIP-3860 limit.
+**Status:** `BallastStandby` follows the maintainer's rules (vaults own all liquidity; the standby holds only the sponsor fund as claims, pays rewards by claim transfer to the vaults, calls nothing but the PoolManager; call graph acyclic). The remaining gap needs a maintainer decision (see PROGRESS.md); no further split has been made.
 
 ## ADR-047 — Exit netting uses the earliest possible release, not `lockedUntil`
 **Context:** `max(maturity, lockedUntil)` assumes the lock lasts to its hard cap, but the lock can end earlier when the market calms, so it overstates guaranteed depth.

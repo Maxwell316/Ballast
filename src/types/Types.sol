@@ -96,10 +96,10 @@ struct StressInfo {
     bool oracleWarm;
     bool lockActive;
     uint40 stressStartedAt;
-    uint40 lockedUntil; // 0 if the lock is inactive
+    uint40 lockedUntil; // informational upper bound on the lock end; 0 if inactive (ADR-047)
     int24 anchorTick;
     int24 shortTick;
-    uint40 earliestUnlock; // earliest time exits could be allowed again (now when the lock is inactive)
+    uint40 earliestRelease; // earliest time exits could resume: min(lock end, earliest calm); now if no lock
 }
 
 /// @notice Read-only snapshot of the standby fund.
