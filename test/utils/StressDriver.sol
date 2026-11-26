@@ -21,7 +21,7 @@ abstract contract StressDriver is HookFixture {
         Config memory c = ConfigFixture.compressed();
         c.maxStressLock = maxStressLock;
         _setUpDefault(c0, c, 0);
-        hook.modifyForTest(-12_000, 12_000, 1e19, bytes32(uint256(1)));
+        _provide(-12_000, 12_000, 1e19);
     }
 
     /// @dev One oracle step: advance `dt` seconds and make a tiny swap (which evaluates stress once per interval).

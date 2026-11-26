@@ -185,3 +185,10 @@ Searched `src/` and `test/` for memory-struct assignments and storage-to-memory 
 ## 9. CI pipeline
 
 `.github/workflows/ci.yml` runs: checkout with submodules, install Foundry, `forge fmt --check`, `forge build --sizes`, `forge test` (CI profile), `forge coverage` with threshold check, Slither, and compliance-matrix generation. Fork tests run on a schedule or manual dispatch if an RPC secret exists.
+
+## 10. G-1 and split-architecture tests (ADR-045)
+
+- PositionManager add fails; plain router add, remove and zero-liquidity poke fail; an arbitrary contract that unlocks then calls `modifyLiquidity` fails (`ExternalLiquidityForbidden`).
+- Bytecode test: the compiled runtime of `BallastHook` contains neither the `modifyLiquidity` selector nor `unlockCallback` (T19).
+- Initcode test: the hook's creation code is below 49,152 bytes with the margin recorded in ADR-046; runtime sizes of hook and vaults are below 23,800 bytes.
+- Gate mutation sanity: `sender == vaults` changed to `!=`, and the check removed, must fail the G-1 tests (log in MUTATION_LOG).

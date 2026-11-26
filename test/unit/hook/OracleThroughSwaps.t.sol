@@ -17,7 +17,7 @@ contract OracleThroughSwapsTest is HookFixture {
     function setUp() public {
         Config memory c = ConfigFixture.compressed();
         _setUpDefault(true, c, 0);
-        hook.modifyForTest(-12_000, 12_000, 1e19, bytes32(uint256(1)));
+        _provide(-12_000, 12_000, 1e19);
         model = new ObservationsModel();
         model.init(block.timestamp, 0);
         initTs = uint40(block.timestamp);

@@ -79,7 +79,7 @@ There is **no owner, no admin, no pause, no upgrade path** (D-1).
 ## 3. Product guarantees and non-goals
 
 ### 3.1 Guarantees (each needs a named test and appears in the demo)
-- **G-1 Hook-only liquidity.** No liquidity can be added to or removed from the pool except by the hook itself. Therefore the pool's whole depth is committed depth.
+- **G-1 Vault-only liquidity.** Only the `BallastVaults` contract, created by the hook in its constructor, can add or remove liquidity in the pool; the hook callbacks enforce this with an explicit sender check. Therefore the pool's whole depth is committed depth.
 - **G-2 Oracle-free proportional shares.** Deposits and redemptions are proportional, in kind, and denominated in liquidity. There is no NAV, no price oracle and no spot-price valuation in share accounting.
 - **G-3 Stress lock.** While the pool is in stress, no vault liquidity can leave the pool, bounded by `maxStressLock` so depositors are never trapped indefinitely.
 - **G-4 Exit notice.** Exits mature after `exitNotice`. Depth reported to risk consumers is net of exits maturing inside the consumer's horizon.
@@ -104,7 +104,8 @@ There is **no owner, no admin, no pause, no upgrade path** (D-1).
 
 | Contract / library | Kind | Responsibility |
 |---|---|---|
-| `BallastHook` | Hook (`BaseHook`, shares ledger, unlock callback) | Hook callbacks, vault lifecycle, stress machine, standby accrual, custody via PoolManager |
+| `BallastHook` | Hook (`BaseHook`) | Hook callbacks, oracle, stress machine, the liquidity gate (ADR-045). Creates `BallastVaults` in its constructor. No `modifyLiquidity`, no `unlock` |
+| `BallastVaults` | Custody (ERC-6909 shares, unlock callback) | Positions, vault shares, PoolManager claims, vault lifecycle, standby accrual. Sole owner of pool liquidity |
 | `BallastLens` | Read-only periphery | Depth views for risk consumers (`IBallastDepthOracle`). Keeps the hook under the 24,576-byte size limit |
 | `SupplyCapAdvisor` | Read-only reference | Converts depth into a suggested supply cap (multiplier × guaranteed depth) |
 | `Observations` | Internal library | Ring-buffer tick-cumulative oracle (v3-style semantics, own implementation) |
@@ -115,9 +116,9 @@ There is **no owner, no admin, no pause, no upgrade path** (D-1).
 | `RewardMath` | Internal library | Standby accrual maths |
 | `interfaces/*` | Interfaces | `IBallastHook`, `IBallastLens`, `IBallastDepthOracle`, events and errors |
 
-**DECISION D-2:** one hook instance serves exactly one pool (bound at `beforeInitialize`), with immutable configuration. A second `initialize` for another pool reverts.
+**DECISION D-2:** one hook instance serves exactly one pool (bound at `beforeInitialize`), with immutable configuration, and owns exactly one `BallastVaults` contract. A second `initialize` for another pool reverts.
 
-**DECISION D-3:** logic lives in small internal libraries with pure/`view` functions that are unit- and fuzz-testable in isolation. The hook contract orchestrates. If bytecode approaches the size limit, move read-only code to `BallastLens`; do not use external library linking (it complicates address mining).
+**DECISION D-3 (amended, ADR-045):** logic lives in small internal libraries with pure/`view` functions that are unit- and fuzz-testable in isolation. One hook plus one custody contract (`BallastVaults`) orchestrate; the hook never calls the vaults after construction, the vaults call the hook only through `enterVaultOp()` and `evaluateStress()`. Both runtime sizes stay below 23,800 bytes. If bytecode approaches the size limit, move read-only code to `BallastLens`; do not use external library linking (it complicates address mining).
 
 **DECISION D-4 (ADR-030):** use OpenZeppelin `uniswap-hooks` v1.2.1 for `BaseHook` (the rubric names `BaseHook` and `getHookPermissions`) and `CurrencySettler` (claims-based settlement via its `burn`/`claims` flags). `v4-periphery` is a test-only dependency (PositionManager, Permit2): it no longer ships `BaseHook` or `HookMiner`. We write our own minimal `HookMiner` in `script/`. Pins are in the "Pinned dependencies" table of `docs/DECISIONS.md`; the API is recorded in `docs/VERIFICATION.md` F-1.
 
@@ -285,12 +286,12 @@ Enable only what is needed (**DECISION D-5**):
 |---|---|---|
 | `beforeInitialize` | true | Bind pool, validate key |
 | `afterInitialize` | true | Seed oracle |
-| `beforeAddLiquidity` | true | Revert for external callers (G-1) |
-| `beforeRemoveLiquidity` | true | Revert for external callers (G-1) |
+| `beforeAddLiquidity` | true | Revert unless `sender == address(vaults)` (G-1) |
+| `beforeRemoveLiquidity` | true | Revert unless `sender == address(vaults)` (G-1) |
 | `beforeSwap` | true | Oracle write and stress evaluation |
 | everything else | false | Minimal permission surface; includes all return-delta flags |
 
-**VERIFY** in the pinned `lib/v4-core/src/libraries/Hooks.sol`: (a) flag constants (use `Hooks.*_FLAG` names, never hard-code bits); (b) that the PoolManager does not invoke a hook's callbacks when the hook itself is the caller of `modifyLiquidity` (the "no self call" behaviour). Ballast relies on (b): the hook's own liquidity operations bypass its callbacks, so `beforeAddLiquidity`/`beforeRemoveLiquidity` can **revert unconditionally** for everyone else. Add a test proving PositionManager and a plain router both fail to add/remove liquidity (G-1).
+**VERIFY** in the pinned `lib/v4-core/src/libraries/Hooks.sol`: flag constants (use `Hooks.*_FLAG` names, never hard-code bits). G-1 does **not** rely on the PoolManager's self-call skip (ADR-045): the vaults contract is a different address from the hook, so the PoolManager calls the hook's `beforeAdd/RemoveLiquidity` for it and the callbacks check `sender == address(vaults)`. Conversely the PoolManager does **not** call a hook's callbacks when the hook itself calls `modifyLiquidity` (T19), so the hook must contain no such call. Tests: PositionManager, a plain router and an arbitrary unlock-then-modify contract all fail (G-1); a bytecode test proves the hook has no `modifyLiquidity` path.
 
 **VERIFIED (docs/VERIFICATION.md F-3):** the Unichain Sepolia PoolManager's runtime code equals Ethereum mainnet's apart from its embedded self-address, and `test/fork/HooksOnChain.t.sol` exercises all five of Ballast's flags against it on a fork. Keep that test and the deploy script's address-flag assertion; re-run the fork test before mining an address on any other chain. A funded testnet deployment is due in M2 and M9.
 
@@ -405,7 +406,7 @@ Everything here marked **VERIFY** must be checked against the pinned sources in 
 3. **`modifyLiquidity` return values.** It returns `(callerDelta, feesAccrued)`. `callerDelta` **includes** accrued fees. Separate them (`principal = callerDelta − feesAccrued`) or the depositor will be charged/credited for other people's fees. Crystallize fees (zero-liquidity poke) before changing shares (§6.7).
 4. **Position identity.** Owner = the hook, `salt = bytes32(vaultId << 8 | slot)`. Use v4's position-key helper. Read liquidity with the `StateLibrary` helpers (`getSlot0`, `getPositionInfo`/`getPositionLiquidity`, tick info). We also keep our own `Position[]` per vault; add an invariant that the two always agree.
 5. **Rounding.** The PoolManager rounds amounts in the pool's favour: adds round up what the caller pays, removals round down what the caller receives. Our share maths must round in the vault's favour on top of that. Never recompute amounts the PoolManager has already reported.
-6. **Self-calls skip callbacks.** The hook's own `modifyLiquidity` does not trigger its own `before/afterAddLiquidity` (**VERIFY**, §6.2). This is the basis of G-1.
+6. **Self-calls skip callbacks (T19).** The PoolManager does not call a hook's callbacks when the hook itself calls `modifyLiquidity`. Ballast avoids relying on it: only `BallastVaults` calls `modifyLiquidity`, and the hook's callbacks check `sender == address(vaults)`. The hook has no such call (bytecode-tested).
 7. **Hook address.** Hook permissions are encoded in the low bits of the hook's address. Deploy through CREATE2 with our own `HookMiner` in `script/utils` (v4-periphery no longer ships one; ADR-030). In Foundry scripts use the standard CREATE2 deployer constant (`CREATE2_FACTORY` in `forge-std`, code present on chain 1301). The deployment script must assert `address(hook)` flags equal `getHookPermissions()`.
 8. **Transient storage.** Build for `evm_version = "cancun"`. Use transient storage for (a) the reentrancy guard and (b) the per-transaction flags `SWAPPED` and `VAULT_OP`. **DECISION D-9:** vault operations and swaps may not share a transaction in either order (`beforeSwap` reverts if `VAULT_OP` is set; `seed`, `deposit`, `claimRedeem`, `rerange` and `deployIdle` set `VAULT_OP` and revert if `SWAPPED` is set). This is defence in depth, not a core dependency, and it can break zap-style integrations, so record it in the ADR log and revisit if it hurts. **VERIFY** compiler and chain support for transient storage.
 9. **Idle custody (D-10).** Idle balances and the standby fund are held as **PoolManager ERC-6909 claims** (`mint`/`burn`), not ERC-20 balances inside the hook. This keeps idle movements inside flash accounting. The vault **shares** token is the hook's own ERC-6909 (id = vaultId). Do not confuse the two ledgers; name them `shares` and `claims` in code. **VERIFY** whether to inherit v4-core's `ERC6909` or use another audited implementation. Fallback if this proves error-prone: hold idle as ERC-20 in the hook, with an ADR.
@@ -422,7 +423,8 @@ Everything here marked **VERIFY** must be checked against the pinned sources in 
 
 | ID | Threat | Mitigation | Evidence |
 |---|---|---|---|
-| T1 | Anyone adds/removes liquidity outside the hook | Unconditional revert in `beforeAdd/RemoveLiquidity`; self-call skip | Test with PositionManager and plain router |
+| T1 | Anyone adds/removes liquidity outside the vaults contract | `beforeAdd/RemoveLiquidity` revert unless `sender == vaults` | Tests with PositionManager, plain router, arbitrary unlock contract; gate mutation |
+| T19 | Self-call bypass: a hook that calls `modifyLiquidity` itself skips its own callbacks | The hook contains no `modifyLiquidity`/`unlock` path; custody lives in `BallastVaults` | Runtime-bytecode test for the selector and `unlockCallback` |
 | T2 | Share inflation / donation | Internal ledgers only, `MINIMUM_SHARES`, requested-shares deposit model | Donation fuzz test |
 | T3 | Push price to trigger stress and trap LPs | TWAP-based transitions, hysteresis, `maxStressLock`, no re-arming | Manipulation scenario test, cost model in THREAT_MODEL |
 | T4 | Push price to suppress stress | Same TWAP guards; residual risk documented | Scenario test |
@@ -444,7 +446,7 @@ Everything here marked **VERIFY** must be checked against the pinned sources in 
 Maintain `docs/THREAT_MODEL.md` with assets, trust boundaries, attacker capabilities, cost estimates for T3/T4 (price manipulation cost versus pool depth) and residual risks. State plainly that the stress lock traps depositors with price risk by design.
 
 ### 8.2 Invariants (each becomes an invariant or fuzz test)
-- **INV-1** Every position in the pool has the hook as owner.
+- **INV-1** Every position in the pool is owned by the `BallastVaults` contract.
 - **INV-2** For each vault, the sum of our recorded position liquidity equals the PoolManager's position liquidity.
 - **INV-3** Claims solvency, per currency: PoolManager claims held by the hook ≥ Σ vault idle + Σ curatorOwed + standby fund (an inequality, since anyone can transfer claims to the hook). Principal conservation is checked through a ghost ledger of PoolManager-reported deltas, with dust always in the vault's favour.
 - **INV-4** `totalSupply(vaultId)` equals the sum of balances plus escrowed shares plus burned minimum.

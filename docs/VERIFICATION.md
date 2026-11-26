@@ -38,7 +38,8 @@
 
 **Decision rule check (human's rule):** compiles with our pins ✓; maintained ✓; `BaseHook` and `CurrencySettler` were in audited scopes, but the exact pinned version (v1.2.1) is not itself audited and the README disclaims audit — **met with this caveat**; settler covers claims ✓. **Result: adopt.** The caveat is mitigated by the small, structural nature of the diff, by our own fork tests against the real PoolManager, and by the fact that the `_before*` surface is the same as the old periphery `BaseHook`, so switching sources later is cheap. See ADR-030.
 
-### F-2 Self-call callback skip (basis of G-1) — **confirmed in source**
+### F-2 Self-call callback skip — **confirmed in source; no longer the basis of G-1 (ADR-045)**
+_G-1 now rests on the explicit sender check in the hook callbacks. The skip is still a hazard (T19): the hook must not call `modifyLiquidity`._
 - `Hooks.noSelfCall`: `if (msg.sender != address(self)) { _; }` (`lib/v4-core/src/libraries/Hooks.sol:170-174`). It guards `beforeInitialize` (178), `afterInitialize` (185-187), `beforeModifyLiquidity` (195-200), `beforeDonate`/`afterDonate` (318-330). `msg.sender` inside this internal library call is the caller of `PoolManager.modifyLiquidity`.
 - `beforeModifyLiquidity` calls `beforeAddLiquidity` when `liquidityDelta > 0` and `beforeRemoveLiquidity` when `< 0` (line 202-206 region; flags at `Hooks.sol:31,34`).
 - **Not guarded:** `beforeSwap` (line 248), `afterSwap` (285) and `afterModifyLiquidity` (209) have no `noSelfCall`; irrelevant to Ballast, which never swaps itself, but note that `afterModifyLiquidity` is not skipped (not enabled).

@@ -58,6 +58,13 @@ struct VaultView {
     uint8 positionCount;
 }
 
+/// @notice Stored vault position. `liquidity` is zero for a slot that holds nothing; such a slot is never poked.
+struct Position {
+    int24 tickLower;
+    int24 tickUpper;
+    uint128 liquidity;
+}
+
 /// @notice Read-only view of one vault position.
 struct PositionView {
     int24 tickLower;
@@ -89,9 +96,10 @@ struct StressInfo {
     bool oracleWarm;
     bool lockActive;
     uint40 stressStartedAt;
-    uint40 lockedUntil; // 0 if the lock is inactive
+    uint40 lockedUntil; // informational upper bound on the lock end; 0 if inactive (ADR-047)
     int24 anchorTick;
     int24 shortTick;
+    uint40 earliestRelease; // earliest time exits could resume: min(lock end, earliest calm); now if no lock
 }
 
 /// @notice Read-only snapshot of the standby fund.

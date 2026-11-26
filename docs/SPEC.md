@@ -39,10 +39,10 @@ Out of scope: native ETH, fee-on-transfer or rebasing tokens, upgradeability, ad
 
 ## 4. Liquidity ownership
 
-- **R-LIQ-1** `beforeAddLiquidity` MUST revert with `ExternalLiquidityForbidden` for every caller that reaches it.
-- **R-LIQ-2** `beforeRemoveLiquidity` MUST revert with `ExternalLiquidityForbidden` for every caller that reaches it.
-- **R-LIQ-3** All positions MUST be owned by the hook. Position salt MUST be `bytes32(vaultId << 8 | slot)`, unique per `(vaultId, slot)`.
-- **R-LIQ-4** The hook's own liquidity operations rely on the PoolManager skipping hook callbacks for self-calls. A deployment smoke test MUST demonstrate that the hook can modify liquidity while an external router and the PositionManager cannot. **VERIFY**
+- **R-LIQ-1** `beforeAddLiquidity` MUST revert with `ExternalLiquidityForbidden` unless `sender == address(vaults)`, where `vaults` is the `BallastVaults` contract the hook created in its constructor (ADR-045).
+- **R-LIQ-2** `beforeRemoveLiquidity` MUST revert with `ExternalLiquidityForbidden` unless `sender == address(vaults)`.
+- **R-LIQ-3** All positions MUST be owned by the `BallastVaults` contract. Position salt MUST be `bytes32(vaultId << 8 | slot)`, unique per `(vaultId, slot)`.
+- **R-LIQ-4** Only `BallastVaults` calls `modifyLiquidity` or `unlock`. The hook MUST NOT contain any path that calls `modifyLiquidity` or `unlock` and MUST NOT implement `IUnlockCallback` (T19: the PoolManager does not call a hook's callbacks for the hook's own `modifyLiquidity`). Tests: PositionManager, a plain router (add, remove, zero-liquidity poke) and an arbitrary contract that unlocks and calls `modifyLiquidity` all fail; the compiled runtime of the hook contains neither the `modifyLiquidity` selector nor `unlockCallback`.
 - **R-LIQ-5** `donate` is not restricted.
 - **R-LIQ-6** The hook MUST NOT call `modifyLiquidity` (including a zero-delta fee poke) on a position whose recorded liquidity is zero. **VERIFY** that v4 reverts on updating an empty position.
 
@@ -64,7 +64,8 @@ States: `CALM`, `STRESS`, `RECOVERING`. Let `dev = collateralIsCurrency0 ? (A �
 
 - **R-STR-1** CALM → STRESS when `dev ≥ stressEnterTicks` and the oracle is warm. On entry the hook MUST record `stressStartedAt = now`. `stressStartedAt` is set on this transition only (ADR-019).
 - **R-STR-2** STRESS → RECOVERING when `dev < stressExitTicks`. RECOVERING → STRESS when `dev ≥ stressEnterTicks`; this transition MUST NOT change `stressStartedAt`, otherwise a relapse could extend the lock indefinitely against R-STR-5.
-- **R-STR-3** RECOVERING → CALM when `dev < stressExitTicks` has held continuously for `calmDuration`.
+- **R-STR-3** RECOVERING → CALM when `dev < stressExitTicks` has held continuously for `calmDuration`. A deviation between the exit and enter thresholds (`stressExitTicks ≤ dev < stressEnterTicks`) interrupts an in-progress calm period: the calm timer restarts the next time `dev` falls below `stressExitTicks`.
+- **R-STR-3a** While the state is STRESS, a deviation between the thresholds keeps the state STRESS: only `dev < stressExitTicks` moves STRESS → RECOVERING.
 - **R-STR-4** The lock is active while the state is not CALM and `now < stressStartedAt + maxStressLock`.
 - **R-STR-5** After the lock expires, it MUST NOT re-arm until the state has returned to CALM at least once. Because `stressStartedAt` is set only on CALM → STRESS (R-STR-1, R-STR-2), an expired lock cannot become active again without an intervening CALM; the machine records the first expiry in a `lockExpiryRecorded` flag, set when `now ≥ stressStartedAt + maxStressLock` is first evaluated in a non-CALM state and cleared whenever the machine is in CALM (the implementation clears it on every transition into CALM; the two wordings are observationally equivalent because the flag is only read in non-CALM states). `LockExpired` is emitted when the flag is set (ADR-033).
 - **R-STR-6** The pure transition function takes a `warm` input (R-ORC-4). While `warm` is false the state MUST remain CALM with cleared timers. If it is ever called with a non-CALM state and `warm == false` (unreachable by R-ORC-7), it MUST return CALM, so a bad input can never trap depositors.
@@ -143,16 +144,18 @@ Blocked calls MUST revert with `StressLockActive(until)` where applicable, or `N
 ## 11. Views
 
 - **R-VIEW-1** `committedDepth()` MUST sum `min(D_v, K_v)` over vaults not in breach.
-- **R-VIEW-2** `liveDepth(impactBps, horizon)` MUST measure from current spot, over all pool liquidity, rounded down. Because of G-1 all pool liquidity is vault liquidity, so it MUST be computed by iterating every vault's positions (bounded by R-VIEW-4), never by scanning ticks. It MUST subtract for each vault the fraction of shares in tickets whose effective exit time `max(maturity, lockedUntil)` is `≤ now + horizon`.
-- **R-VIEW-3** `lockState()` MUST return the current state and, if the lock is active, `lockedUntil = stressStartedAt + maxStressLock`.
+- **R-VIEW-2** `liveDepth(impactBps, horizon)` (netting uses `earliestRelease`, MATH §5a, ADR-047) MUST measure from current spot, over all pool liquidity, rounded down. Because of G-1 all pool liquidity is vault liquidity, so it MUST be computed by iterating every vault's positions (bounded by R-VIEW-4), never by scanning ticks. It MUST subtract for each vault the fraction of shares in tickets whose effective exit time `max(maturity, earliestRelease)` is `≤ now + horizon`, where `earliestRelease = min(stressStartedAt + maxStressLock, earliestCalm)` (MATH §5a).
+- **R-VIEW-3** `lockState()` MUST return the current state and, if the lock is active, `lockedUntil = stressStartedAt + maxStressLock`, an informational **upper bound** on the lock end. `StressInfo.earliestRelease` is the earliest the lock could release and is what netting uses.
 - **R-VIEW-4** All views MUST be bounded by `MAX_VAULTS × MAX_POSITIONS` iterations.
 - **R-VIEW-5** `liveDepth` is the figure risk consumers SHOULD use to size caps. `committedDepth` is for coverage and reward accounting and does not net exits or measure from spot.
 
 ## 12. Same-transaction guards
 
-- **R-TX-1** `beforeSwap` MUST set a transient `SWAPPED` flag and revert if `VAULT_OP` is set.
+- **R-TX-1** `beforeSwap` MUST set a transient `SWAPPED` flag and revert if `VAULT_OP` is set. The flags live in the hook; the vaults set `VAULT_OP` through `enterVaultOp()`, callable only by the vaults.
 - **R-TX-2** `seed`, `deposit`, `claimRedeem`, `rerange` and `deployIdle` MUST set `VAULT_OP` and revert if `SWAPPED` is set.
-- **R-TX-3** All state-changing external functions that unlock MUST be non-reentrant via a transient guard.
+- **R-TX-3** All state-changing external functions of the vaults that unlock MUST be non-reentrant via a transient guard held in the vaults.
+- **R-SPLIT-1** The hook creates the vaults in its constructor and never calls it afterwards; the vaults call the hook only through `enterVaultOp()` (vaults only) and `evaluateStress()`. No owner, admin, proxy or `delegatecall` exists in either contract (ADR-045).
+- **R-SPLIT-2** The hook's creation code (which embeds the vaults' creation code) MUST stay below the EIP-3860 initcode limit of 49,152 bytes with a stated margin; both runtime sizes MUST stay below 23,800 bytes.
 
 ## 13. Access control
 

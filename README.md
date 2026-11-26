@@ -14,7 +14,7 @@ Lending risk teams size collateral supply caps from DEX depth. The public method
 
 ## How it works (short)
 
-1. **Hook-owned liquidity.** Only the hook can add or remove liquidity in a Ballast pool, so the pool's entire depth is committed depth.
+1. **Vault-only liquidity.** Only the `BallastVaults` contract (created by the hook in its constructor) can add or remove liquidity in a Ballast pool, and the hook's callbacks enforce it with a sender check, so the pool's entire depth is committed depth.
 2. **Curator vaults.** Curators choose ranges and a depth commitment. Depositors hold proportional, in-kind vault shares (no price oracle in share accounting).
 3. **Notice and stress lock.** Exits go through a notice queue. When the pool's short-term TWAP falls sharply versus its own anchor TWAP, the queue freezes until calm or a hard maximum lock elapses. The lock cannot re-arm until the market has been calm.
 4. **Standby fee.** A sponsor funds a per-second standby fee paid to vaults on verified, conservatively sampled committed depth.
@@ -26,7 +26,7 @@ Ballast does **not** protect depositors from price losses. The lock holds risk i
 
 | Path | Contents |
 |---|---|
-| `src/` | `BallastHook`, `BallastLens`, `SupplyCapAdvisor`, libraries, interfaces |
+| `src/` | `BallastHook` (callbacks, oracle, stress, gate), `BallastVaults` (custody, shares, vault operations), `BallastLens`, `SupplyCapAdvisor`, libraries, interfaces |
 | `test/` | unit, fuzz, differential, invariant, scenario, fork and gas tests |
 | `script/` | deployment, pool creation, seeding, standby funding, crash replay |
 | `docs/` | spec, contract reference, architecture, math, threat model, testing, economics, deployment, simulation, decisions |
