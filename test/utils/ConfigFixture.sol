@@ -33,4 +33,17 @@ library ConfigFixture {
         c.observationCardinality = 1585; // ceil(86400 / 60) + 1 = 1441 minimum; 1.1x margin
         c.maxStandbyRate = 1e12;
     }
+
+    /// @dev Short windows for tests that sweep many snapshots quickly: 1 h anchor, 5 min short, 60 s interval.
+    function compressed() internal pure returns (Config memory c) {
+        c = prodLike();
+        c.anchorWindow = 1 hours;
+        c.shortWindow = 5 minutes;
+        c.calmDuration = 10 minutes;
+        c.maxStressLock = 1 hours;
+        c.exitNotice = 10 minutes;
+        c.rerangeGrace = 5 minutes;
+        c.maxAccrualInterval = 5 minutes;
+        c.observationCardinality = 67; // ceil(3600 / 60) + 1 = 61 minimum
+    }
 }

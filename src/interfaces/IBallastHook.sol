@@ -1,17 +1,13 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.26;
 
-import {PoolId} from "@uniswap/v4-core/src/types/PoolId.sol";
 import {IERC6909Claims} from "@uniswap/v4-core/src/interfaces/external/IERC6909Claims.sol";
-import {IBallastErrors} from "./IBallastErrors.sol";
-import {IBallastEvents} from "./IBallastEvents.sol";
+import {IBallastPool} from "./IBallastPool.sol";
 import {
-    Config,
     CuratorRecord,
     PositionView,
     Range,
     StandbyInfo,
-    StressInfo,
     TicketView,
     VaultView
 } from "../types/Types.sol";
@@ -20,7 +16,7 @@ import {
 /// @notice Public surface of the Ballast hook. Behaviour is defined in docs/SPEC.md.
 /// @dev The ERC-6909 surface (`balanceOf`, `transfer`, `approve`, `setOperator`, ...) is the vault share token,
 /// id = vaultId. Shares are distinct from PoolManager claims. `totalSupply` is tracked by the hook.
-interface IBallastHook is IBallastErrors, IBallastEvents, IERC6909Claims {
+interface IBallastHook is IBallastPool, IERC6909Claims {
     // ─── Vault lifecycle ───
 
     /// @notice Creates an empty vault. The caller becomes its curator. Ranges are stored; no liquidity exists yet.
@@ -80,9 +76,6 @@ interface IBallastHook is IBallastErrors, IBallastEvents, IERC6909Claims {
     /// @notice Flags a vault whose coverage stayed below its commitment past `rerangeGrace`.
     function flagBreach(uint256 vaultId) external;
 
-    /// @notice Evaluates the stress machine.
-    function pokeStress() external;
-
     // ─── Sponsor ───
 
     /// @notice Sponsor only. Pulls quote currency into the standby fund. Not withdrawable in v1 (ADR-021).
@@ -93,15 +86,11 @@ interface IBallastHook is IBallastErrors, IBallastEvents, IERC6909Claims {
 
     // ─── Views ───
 
-    function config() external view returns (Config memory);
-    function poolId() external view returns (PoolId);
-    function collateralIsCurrency0() external view returns (bool);
     function vaultCount() external view returns (uint256);
     function vault(uint256 vaultId) external view returns (VaultView memory);
     function positionsOf(uint256 vaultId) external view returns (PositionView[] memory);
     function ticket(uint256 ticketId) external view returns (TicketView memory);
     function record(uint256 vaultId) external view returns (CuratorRecord memory);
-    function stressInfo() external view returns (StressInfo memory);
     function standbyInfo() external view returns (StandbyInfo memory);
 
     /// @notice Estimate only: the PoolManager's rounding is authoritative at execution time.
@@ -115,9 +104,6 @@ interface IBallastHook is IBallastErrors, IBallastEvents, IERC6909Claims {
         external
         view
         returns (uint128 amount0, uint128 amount1);
-
-    /// @notice Time-weighted average tick over `window`; `warm` is false if the history is shorter.
-    function twapTick(uint32 window) external view returns (int24 tick, bool warm);
 
     /// @notice Total supply of a vault's shares, including escrow and the burned minimum.
     function totalSupply(uint256 vaultId) external view returns (uint256);

@@ -4,11 +4,12 @@ pragma solidity 0.8.26;
 /// @title IBallastErrors
 /// @notice Custom errors of the Ballast hook. No revert strings are used anywhere.
 interface IBallastErrors {
-    error NotPoolManager();
     error NotCurator(address caller);
     error NotSponsor(address caller);
     error PoolInitializerOnly(address caller);
     error PoolAlreadyBound();
+    /// @notice A pool-dependent call was made before `beforeInitialize` bound the pool.
+    error PoolNotBound();
     error InvalidPoolKey();
     error DynamicFeeUnsupported();
     error NativeCurrencyUnsupported();
