@@ -3,7 +3,6 @@ pragma solidity 0.8.26;
 
 import {CurrencySettler} from "@openzeppelin/uniswap-hooks/utils/CurrencySettler.sol";
 import {IPoolManager} from "@uniswap/v4-core/src/interfaces/IPoolManager.sol";
-import {IUnlockCallback} from "@uniswap/v4-core/src/interfaces/callback/IUnlockCallback.sol";
 import {PoolKey} from "@uniswap/v4-core/src/types/PoolKey.sol";
 import {Currency} from "@uniswap/v4-core/src/types/Currency.sol";
 import {BalanceDelta} from "@uniswap/v4-core/src/types/BalanceDelta.sol";
@@ -18,41 +17,46 @@ import {Transient} from "../../src/libraries/Transient.sol";
 /// (the release bytecode contains none of this). It adds: (1) liquidity entrypoints that perform the hook's own
 /// `modifyLiquidity` inside an unlock, standing in for vault operations until M3; (2) entrypoints that exercise the
 /// D-9 and reentrancy guards; (3) a gas probe around `_beforeSwap`.
-contract BallastHookHarness is BallastHook, IUnlockCallback {
+contract BallastHookHarness is BallastHook {
     using CurrencySettler for Currency;
 
-    PoolKey internal _key;
+    uint8 internal constant OP_TEST_MODIFY = 255;
+
     uint256 public lastBeforeSwapGas;
     uint256 public reentrantAttempts;
     bool public probeReentrancy;
 
     constructor(IPoolManager pm, Config memory cfg) BallastHook(pm, cfg) {}
 
-    // ─── (1) hook-owned liquidity, test stand-in for M3 ───
-
-    function setKey(PoolKey calldata key) external {
-        _key = key;
-    }
+    // ─── (1) raw hook-owned liquidity, used to prove the self-call skip (R-LIQ-4) ───
 
     /// @notice The hook adds (liquidityDelta > 0) or removes liquidity on its own account, settling in tokens.
     function modifyForTest(int24 lower, int24 upper, int256 liquidityDelta, bytes32 salt) external {
-        poolManager.unlock(abi.encode(lower, upper, liquidityDelta, salt));
+        OpCtx memory c;
+        c.op = OP_TEST_MODIFY;
+        c.extra = abi.encode(lower, upper, liquidityDelta, salt);
+        poolManager.unlock(abi.encode(c));
     }
 
-    function unlockCallback(bytes calldata data) external returns (bytes memory) {
-        if (msg.sender != address(poolManager)) revert NotPoolManager();
+    function unlockCallback(bytes calldata data) external override onlyPoolManager returns (bytes memory) {
+        OpCtx memory c = abi.decode(data, (OpCtx));
+        if (c.op != OP_TEST_MODIFY) {
+            (uint128 a0, uint128 a1) = _dispatch(c);
+            return abi.encode(a0, a1);
+        }
         (int24 lower, int24 upper, int256 liq, bytes32 salt) =
-            abi.decode(data, (int24, int24, int256, bytes32));
+            abi.decode(c.extra, (int24, int24, int256, bytes32));
+        PoolKey memory key = _poolKey();
         (BalanceDelta d,) = poolManager.modifyLiquidity(
-            _key,
+            key,
             ModifyLiquidityParams({
                 tickLower: lower, tickUpper: upper, liquidityDelta: liq, salt: salt
             }),
             ""
         );
-        _settle(_key.currency0, d.amount0());
-        _settle(_key.currency1, d.amount1());
-        return "";
+        _settle(key.currency0, d.amount0());
+        _settle(key.currency1, d.amount1());
+        return abi.encode(uint128(0), uint128(0));
     }
 
     function _settle(Currency c, int128 amt) private {

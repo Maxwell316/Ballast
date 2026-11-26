@@ -58,6 +58,13 @@ struct VaultView {
     uint8 positionCount;
 }
 
+/// @notice Stored vault position. `liquidity` is zero for a slot that holds nothing; such a slot is never poked.
+struct Position {
+    int24 tickLower;
+    int24 tickUpper;
+    uint128 liquidity;
+}
+
 /// @notice Read-only view of one vault position.
 struct PositionView {
     int24 tickLower;
@@ -92,6 +99,7 @@ struct StressInfo {
     uint40 lockedUntil; // 0 if the lock is inactive
     int24 anchorTick;
     int24 shortTick;
+    uint40 earliestUnlock; // earliest time exits could be allowed again (now when the lock is inactive)
 }
 
 /// @notice Read-only snapshot of the standby fund.

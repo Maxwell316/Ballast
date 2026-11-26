@@ -74,7 +74,6 @@ abstract contract HookFixture is Test {
             collateralIs0 ? (c.collateral, c.quote) : (c.quote, c.collateral);
         key = PoolKey(c0, c1, c.fee, c.tickSpacing, IHooks(HOOK_ADDR));
         pid = key.toId();
-        hook.setKey(key);
     }
 
     function _initPool(int24 tick) internal {

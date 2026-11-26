@@ -84,7 +84,6 @@ contract HookOnlyLiquidityForkTest is Test {
         hook = BallastHookHarness(HOOK_ADDR);
         key = PoolKey(c.collateral, c.quote, c.fee, c.tickSpacing, IHooks(HOOK_ADDR));
         pid = key.toId();
-        hook.setKey(key);
 
         vm.prank(c.initializer);
         pm.initialize(key, TickMath.getSqrtPriceAtTick(0));

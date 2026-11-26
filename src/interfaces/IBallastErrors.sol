@@ -36,4 +36,11 @@ interface IBallastErrors {
     error StandbyRateTooHigh();
     error GraceNotExpired(uint40 until);
     error VaultNotInBreach();
+    error UnknownVault(uint256 vaultId);
+    error UnknownTicket(uint256 ticketId);
+    error InvalidLiquidities();
+    error InvalidReceiver();
+    error InvalidCuratorFee(uint16 feeBps);
+    error AlreadyInBreach();
+    error SharesExceedBalance();
 }

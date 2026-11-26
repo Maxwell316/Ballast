@@ -86,24 +86,16 @@ interface IBallastHook is IBallastPool, IERC6909Claims {
 
     // ─── Views ───
 
+    /// @notice Open ticket shares of a vault whose effective exit (`max(maturity, earliestUnlock)`) is within
+    /// `horizon` seconds. Conservative: never below the exact figure (ADR-045).
+    function exitingShares(uint256 vaultId, uint32 horizon) external view returns (uint256);
+
     function vaultCount() external view returns (uint256);
     function vault(uint256 vaultId) external view returns (VaultView memory);
     function positionsOf(uint256 vaultId) external view returns (PositionView[] memory);
     function ticket(uint256 ticketId) external view returns (TicketView memory);
     function record(uint256 vaultId) external view returns (CuratorRecord memory);
     function standbyInfo() external view returns (StandbyInfo memory);
-
-    /// @notice Estimate only: the PoolManager's rounding is authoritative at execution time.
-    function previewDeposit(uint256 vaultId, uint128 shares)
-        external
-        view
-        returns (uint128 amount0, uint128 amount1);
-
-    /// @notice Estimate only: the PoolManager's rounding is authoritative at execution time.
-    function previewRedeem(uint256 vaultId, uint128 shares)
-        external
-        view
-        returns (uint128 amount0, uint128 amount1);
 
     /// @notice Total supply of a vault's shares, including escrow and the burned minimum.
     function totalSupply(uint256 vaultId) external view returns (uint256);

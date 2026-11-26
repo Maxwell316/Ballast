@@ -13,3 +13,5 @@ uint128 constant INITIAL_SHARES = 1e18;
 uint256 constant RATE_SCALE = 1e18;
 /// @dev Basis-point denominator.
 uint256 constant BPS_DENOMINATOR = 10_000;
+/// @dev Number of maturity buckets per vault used to aggregate redeem tickets for exit netting (ADR-045).
+uint256 constant EXIT_BUCKETS = 16;
