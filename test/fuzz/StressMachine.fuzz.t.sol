@@ -33,7 +33,8 @@ contract StressMachineFuzzTest is Test {
         pure
         returns (Ref memory o, bool expiredNow)
     {
-        o = r;
+        // Explicit copy: `o = r` would alias the caller's struct and mutate it in place.
+        o = Ref(r.state, r.start, r.runStart, r.expiryFlagged);
         if (!warm) return (Ref(0, 0, 0, false), false);
         uint8 cls = dev >= int256(uint256(k.enter)) ? 2 : (dev < int256(uint256(k.exit_)) ? 0 : 1);
         if (r.state == 0) {

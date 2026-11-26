@@ -185,7 +185,8 @@ library Observations {
         int24 currentTick,
         Cursor memory hint
     ) internal view returns (int56 cumulative, bool warm, Cursor memory next) {
-        next = hint;
+        // Explicit copy: assigning a memory struct only aliases it (the `nc = c` class of bug).
+        next = Cursor({index: hint.index, timestamp: hint.timestamp});
         State memory st = s;
         if (nowTs < st.lastSwapTs) revert TimeRegression(nowTs, st.lastSwapTs);
         if (secondsAgo > nowTs) {
