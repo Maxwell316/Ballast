@@ -16,6 +16,7 @@ import {
 import {ModifyLiquidityParams, SwapParams} from "@uniswap/v4-core/src/types/PoolOperation.sol";
 import {BandMath} from "./libraries/BandMath.sol";
 import {ConfigLib} from "./libraries/ConfigLib.sol";
+import {HookPermissions} from "./libraries/HookPermissions.sol";
 import {Observations} from "./libraries/Observations.sol";
 import {StressMachine} from "./libraries/StressMachine.sol";
 import {Transient} from "./libraries/Transient.sol";
@@ -118,11 +119,7 @@ contract BallastHook is BaseHook, IBallastPool {
         override
         returns (Hooks.Permissions memory permissions)
     {
-        permissions.beforeInitialize = true;
-        permissions.afterInitialize = true;
-        permissions.beforeAddLiquidity = true;
-        permissions.beforeRemoveLiquidity = true;
-        permissions.beforeSwap = true;
+        return HookPermissions.permissions();
     }
 
     // ─── Hook callbacks ───

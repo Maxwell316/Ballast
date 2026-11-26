@@ -54,7 +54,11 @@ contract StressMachineVectorsTest is Test {
 
     function _report(uint256 i, uint256 e, string memory what) internal {
         ++mismatches;
-        if (mismatches <= 10) emit log_named_string(string.concat("MISMATCH timeline ", vm.toString(i), " event ", vm.toString(e)), what);
+        if (mismatches <= 10) {
+            emit log_named_string(
+                string.concat("MISMATCH timeline ", vm.toString(i), " event ", vm.toString(e)), what
+            );
+        }
     }
 
     function _replay(Timeline memory tl, uint256 i) internal {
