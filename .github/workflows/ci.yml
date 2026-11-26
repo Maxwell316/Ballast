@@ -15,10 +15,12 @@ jobs:
         run: forge build --sizes
       - name: Tests
         run: forge test -vvv
-      - name: Coverage gate (src/libraries only until M2, then all of src/)
+      - name: Coverage gate (all of src/, from the end of M2)
+        env:
+          FOUNDRY_PROFILE: default # instrumented runs with CI-profile fuzz counts would take far too long
         run: |
           forge coverage --report lcov --no-match-path "test/fork/*"
-          python3 tools/coverage_gate.py lcov.info src/libraries/ --lines 95 --branches 90
+          python3 tools/coverage_gate.py lcov.info src/ --lines 95 --branches 90
       - name: Compliance report
         run: python3 tools/compliance.py
   slither:
