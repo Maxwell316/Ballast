@@ -321,3 +321,6 @@ Limits: runtime 23,800 (24,576 hard); hook initcode 49,152 (EIP-3860), margin ta
 ## ADR-054 — Tests read `vm.getBlockTimestamp()`, not `block.timestamp`
 **Context:** with `via_ir`, `block.timestamp` read after `vm.warp` inside one test function can be folded to a constant, so `vm.warp(block.timestamp + 1)` in a loop did not advance time and four M2 tests failed with `TimeRegression`. **Decision:** every test reads time with `vm.getBlockTimestamp()`. Source contracts are unaffected (a real transaction sees one timestamp).
 
+## ADR-055 — The re-range dust rule is bounded
+**Context:** ADR-049 shrank the largest new position by the minimal liquidity covering any shortfall, with no bound. A curator typo (or a re-range far larger than idle can fund) would then succeed silently with much less liquidity than requested, passing the coverage check only if the commitment still held. This was found while writing the M4 tests. **Decision:** the shrink applies only to rounding dust. Each removal rounds down and each addition rounds up by at most one wei per currency, so a shortfall above `2 × (positions removed + positions added)` per currency reverts `InsufficientIdle` and the vault is untouched. ADR-049's test bound stands. SPEC R-VLT-13 and TESTING are patched accordingly.
+

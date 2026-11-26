@@ -584,6 +584,9 @@ contract BallastVaults is IUnlockCallback, IBallastVaults {
             net0 += a0;
             net1 += a1;
         }
+        // Rounding dust bound (ADR-049, ADR-055): each removal rounds down and each addition rounds up by at most one
+        // wei per currency, so a shortfall above 2 * (removals + additions) is not dust and reverts.
+        uint256 maxDust = 2 * (ps.length + ranges.length);
         delete _positions[c.v];
         uint256 largest;
         for (uint256 i; i < ranges.length; ++i) {
@@ -602,7 +605,7 @@ contract BallastVaults is IUnlockCallback, IBallastVaults {
 
         // Dust rule (ADR-046): the net of removals and additions settles against idle. If idle cannot cover a
         // shortfall, the largest new position is shrunk by the minimal liquidity that does.
-        (net0, net1) = _coverShortfall(c.v, largest, net0, net1, env);
+        (net0, net1) = _coverShortfall(c.v, largest, net0, net1, env, maxDust);
         _settleNet(_c0(), net0, vd.idle0, c.v, true);
         _settleNet(_c1(), net1, vd.idle1, c.v, false);
 
@@ -687,14 +690,20 @@ contract BallastVaults is IUnlockCallback, IBallastVaults {
 
     /// @dev If a currency's net debt exceeds idle, removes the minimal liquidity from the largest new position so the
     /// removal covers the shortfall. At most one shrink per currency; reverts `InsufficientIdle` if that fails.
-    function _coverShortfall(uint256 v, uint256 largest, int256 net0, int256 net1, Env memory env)
-        internal
-        returns (int256, int256)
+    function _coverShortfall(
+        uint256 v,
+        uint256 largest,
+        int256 net0,
+        int256 net1,
+        Env memory env,
+        uint256 maxDust
+    ) internal returns (int256, int256)
     {
         for (uint256 k; k < 2; ++k) {
             uint256 idle = k == 0 ? _vaults[v].idle0 : _vaults[v].idle1;
             int256 net = k == 0 ? net0 : net1;
             if (net >= 0 || uint256(-net) <= idle) continue;
+            if (uint256(-net) - idle > maxDust) revert InsufficientIdle();
             (int128 a0, int128 a1) = _shrink(v, largest, uint256(-net) - idle, k == 0, env);
             net0 += a0;
             net1 += a1;
