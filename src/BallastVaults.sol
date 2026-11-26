@@ -1020,7 +1020,9 @@ contract BallastVaults is IUnlockCallback, IBallastVaults {
                     || lo % _tickSpacing != 0 || hi % _tickSpacing != 0
             ) revert InvalidRange(lo, hi);
             for (uint256 j; j < i; ++j) {
-                if (ranges[j].tickLower == lo && ranges[j].tickUpper == hi) revert DuplicateRange();
+                if (ranges[j].tickLower == lo && ranges[j].tickUpper == hi) {
+                    revert DuplicateRange();
+                }
             }
         }
     }

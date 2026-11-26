@@ -87,7 +87,9 @@ contract ReentrancyTest is HookFixture {
     function test_RevertWhen_TokenReentersDeposit() public {
         re.arm(
             address(vaults),
-            abi.encodeCall(vaults.deposit, (v, 1e15, type(uint128).max, type(uint128).max, address(this)))
+            abi.encodeCall(
+                vaults.deposit, (v, 1e15, type(uint128).max, type(uint128).max, address(this))
+            )
         );
         vm.expectRevert(IBallastErrors.Reentrancy.selector);
         vaults.deposit(v, 1e15, type(uint128).max, type(uint128).max, address(this));

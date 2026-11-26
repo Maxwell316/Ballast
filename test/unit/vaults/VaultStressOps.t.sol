@@ -71,7 +71,9 @@ contract VaultStressOpsTest is StressDriver {
         vaults.deployIdle(v, Range(-600, 600), 1e17);
         vm.expectRevert(IBallastErrors.InvalidLiquidities.selector);
         vaults.deployIdle(v, Range(-600, 600), 0);
-        vm.expectRevert(abi.encodeWithSelector(IBallastErrors.InvalidRange.selector, int24(-601), int24(600)));
+        vm.expectRevert(
+            abi.encodeWithSelector(IBallastErrors.InvalidRange.selector, int24(-601), int24(600))
+        );
         vaults.deployIdle(v, Range(-601, 600), 1e17);
         // More than idle can pay for.
         vm.expectRevert(IBallastErrors.InsufficientIdle.selector);
@@ -131,21 +133,35 @@ contract VaultStressOpsTest is StressDriver {
         uint256 a = lens.liveDepth(impact, lo);
         uint256 b = lens.liveDepth(impact, hi);
         assertLe(b, a, "INV-10: a longer horizon never shows more depth");
-        assertLe(a, lens.poolAbsorbable(impact), "live depth never exceeds the pool's absorbable depth");
+        assertLe(
+            a, lens.poolAbsorbable(impact), "live depth never exceeds the pool's absorbable depth"
+        );
     }
 
-    function testFuzz_LiveDepth_IsMonotoneInTheHorizon_Calm(uint16 impact, uint32 h1, uint32 h2) public {
+    function testFuzz_LiveDepth_IsMonotoneInTheHorizon_Calm(uint16 impact, uint32 h1, uint32 h2)
+        public
+    {
         _setUpStress(1 hours);
         _tickets();
-        _checkMonotone(uint16(bound(impact, 50, 2500)), uint32(bound(h1, 0, 3 days)), uint32(bound(h2, 0, 3 days)));
+        _checkMonotone(
+            uint16(bound(impact, 50, 2500)),
+            uint32(bound(h1, 0, 3 days)),
+            uint32(bound(h2, 0, 3 days))
+        );
     }
 
-    function testFuzz_LiveDepth_IsMonotoneInTheHorizon_Stress(uint16 impact, uint32 h1, uint32 h2) public {
+    function testFuzz_LiveDepth_IsMonotoneInTheHorizon_Stress(uint16 impact, uint32 h1, uint32 h2)
+        public
+    {
         _setUpStress(1 hours);
         _tickets();
         _warmUp();
         _crash();
         _stepUntil(LockState.STRESS, 20);
-        _checkMonotone(uint16(bound(impact, 50, 2500)), uint32(bound(h1, 0, 3 days)), uint32(bound(h2, 0, 3 days)));
+        _checkMonotone(
+            uint16(bound(impact, 50, 2500)),
+            uint32(bound(h1, 0, 3 days)),
+            uint32(bound(h2, 0, 3 days))
+        );
     }
 }

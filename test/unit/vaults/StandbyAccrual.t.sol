@@ -86,7 +86,9 @@ contract StandbyAccrualTest is HookFixture {
     }
 
     function test_RevertWhen_AccrueCalledByAnyoneButTheVaults() public {
-        vm.expectRevert(abi.encodeWithSelector(BallastStandby.NotVaultsContract.selector, address(this)));
+        vm.expectRevert(
+            abi.encodeWithSelector(BallastStandby.NotVaultsContract.selector, address(this))
+        );
         standby.accrue(1e18, 100);
     }
 
@@ -111,9 +113,16 @@ contract StandbyAccrualTest is HookFixture {
         assertEq(info.totalCredited, expected);
         assertEq(info.fundBalance, 1e15 - expected);
         // INV-3: the vaults' quote claims cover the new balances.
-        assertGe(pm.balanceOf(address(vaults), uint256(uint160(address(quote)))), _quoteIdle() + _quoteOwed());
+        assertGe(
+            pm.balanceOf(address(vaults), uint256(uint160(address(quote)))),
+            _quoteIdle() + _quoteOwed()
+        );
         CuratorRecord memory rec = lens.vaultRecord(v);
-        assertEq(rec.depthSeconds, uint256(COMMITMENT) * 100 + 0, "depth-seconds of the eligible depth (first interval had none)");
+        assertEq(
+            rec.depthSeconds,
+            uint256(COMMITMENT) * 100 + 0,
+            "depth-seconds of the eligible depth (first interval had none)"
+        );
     }
 
     function test_Accrual_IntervalIsCappedAtMaxAccrualInterval() public {

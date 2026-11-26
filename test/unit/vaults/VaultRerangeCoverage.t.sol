@@ -70,7 +70,11 @@ contract VaultRerangeCoverageTest is HookFixture {
         assertEq(p[0].tickLower, -3000);
         assertEq(p[0].liquidity, 8e18);
         VaultView memory d = lens.vault(v);
-        assertGt(d.idle0 + d.idle1, 0, "recovered tokens that the smaller position does not need are idle");
+        assertGt(
+            d.idle0 + d.idle1,
+            0,
+            "recovered tokens that the smaller position does not need are idle"
+        );
         assertEq(lens.vaultRecord(v).rerangeCount, 1);
         // Shares are untouched by a re-range (G-2).
         assertEq(d.totalShares, 1e18);
@@ -103,7 +107,9 @@ contract VaultRerangeCoverageTest is HookFixture {
         vaults.rerange(v, _one(-60, 60), _l(1e18));
         vm.expectRevert(IBallastErrors.InvalidLiquidities.selector);
         vaults.rerange(v, _one(-60, 60), new uint128[](2));
-        vm.expectRevert(abi.encodeWithSelector(IBallastErrors.InvalidRange.selector, int24(-61), int24(60)));
+        vm.expectRevert(
+            abi.encodeWithSelector(IBallastErrors.InvalidRange.selector, int24(-61), int24(60))
+        );
         vaults.rerange(v, _one(-61, 60), _l(1e18));
         uint256 unseeded = vaults.createVault(_one(-60, 60), 0, 0);
         vm.expectRevert(IBallastErrors.VaultNotSeeded.selector);

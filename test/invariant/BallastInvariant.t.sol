@@ -247,7 +247,8 @@ contract BallastHandler is Test {
             }),
             PoolSwapTest.TestSettings({takeClaims: false, settleUsingBurn: false}),
             ""
-        ) {} catch {}
+        ) {}
+            catch {}
     }
 
     function warp(uint256 dt) external {
@@ -351,25 +352,38 @@ contract BallastInvariantTest is HookFixture {
     }
 
     function _poolLiq(uint256 v, uint256 slot, int24 lo, int24 hi) internal view returns (uint128) {
-        bytes32 k = PoolPosition.calculatePositionKey(address(vaults), lo, hi, bytes32((v << 8) | slot));
+        bytes32 k =
+            PoolPosition.calculatePositionKey(address(vaults), lo, hi, bytes32((v << 8) | slot));
         return IPoolManager(address(pm)).getPositionLiquidity(pid, k);
     }
 
     /// INV-1 and INV-2: every position is the vaults', owned by no one else, and the recorded liquidity equals the pool's.
-    function invariant_PositionsAreOwnedByTheVaults_AndRecordedLiquidityMatchesThePool() public view {
+    function invariant_PositionsAreOwnedByTheVaults_AndRecordedLiquidityMatchesThePool()
+        public
+        view
+    {
         uint256 n = lens.vaultCount();
         for (uint256 v = 1; v <= n; ++v) {
             for (uint256 s; s < lens.positionsOf(v).length; ++s) {
                 (int24 lo, int24 hi, uint128 liq) = _position(v, s);
                 assertEq(_poolLiq(v, s, lo, hi), liq, "INV-2");
-                bytes32 hk = PoolPosition.calculatePositionKey(address(hook), lo, hi, bytes32((v << 8) | s));
-                assertEq(IPoolManager(address(pm)).getPositionLiquidity(pid, hk), 0, "INV-1: hook owns nothing");
+                bytes32 hk =
+                    PoolPosition.calculatePositionKey(address(hook), lo, hi, bytes32((v << 8) | s));
+                assertEq(
+                    IPoolManager(address(pm)).getPositionLiquidity(pid, hk),
+                    0,
+                    "INV-1: hook owns nothing"
+                );
             }
         }
     }
 
     function _position(uint256 v, uint256 s) internal view returns (int24, int24, uint128) {
-        return (lens.positionsOf(v)[s].tickLower, lens.positionsOf(v)[s].tickUpper, lens.positionsOf(v)[s].liquidity);
+        return (
+            lens.positionsOf(v)[s].tickLower,
+            lens.positionsOf(v)[s].tickUpper,
+            lens.positionsOf(v)[s].liquidity
+        );
     }
 
     /// INV-3 (inequality form): the PoolManager claims the vaults hold cover every vault's idle plus curator-owed
@@ -389,7 +403,11 @@ contract BallastInvariantTest is HookFixture {
         assertGe(pm.balanceOf(address(vaults), c0), s0, "INV-3 currency0");
         assertGe(pm.balanceOf(address(vaults), c1), s1, "INV-3 currency1");
         StandbyInfo memory info = vaults.standby().standbyInfo();
-        assertGe(pm.balanceOf(address(vaults.standby()), uint256(uint160(address(quote)))), info.fundBalance, "INV-3 fund");
+        assertGe(
+            pm.balanceOf(address(vaults.standby()), uint256(uint160(address(quote)))),
+            info.fundBalance,
+            "INV-3 fund"
+        );
     }
 
     /// INV-4: total supply equals the sum of the balances of every account that can hold shares.
@@ -420,7 +438,11 @@ contract BallastInvariantTest is HookFixture {
     function invariant_CreditedRewardsNeverExceedFunding() public view {
         StandbyInfo memory info = vaults.standby().standbyInfo();
         assertLe(info.totalCredited, handler.fundedTotal(), "INV-8");
-        assertEq(uint256(info.fundBalance) + info.totalCredited, handler.fundedTotal(), "fund conservation");
+        assertEq(
+            uint256(info.fundBalance) + info.totalCredited,
+            handler.fundedTotal(),
+            "fund conservation"
+        );
     }
 
     /// Meaningfulness: the run exercises stress, exits and re-ranges (reported by `-vv`, asserted loosely).

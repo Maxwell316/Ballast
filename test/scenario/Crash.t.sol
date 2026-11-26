@@ -109,15 +109,24 @@ contract CrashTest is StressDriver {
 
     // ─── the product: the liquidation executes against committed liquidity ───
 
-    function test_Liquidation_ExecutesInStress_AndLiveDepthFallsWhileTheLockHolds() public {
+    function test_Liquidation_ExecutesInStress_AndTheLockHolds() public {
         _setUpCrash(1 hours);
         _toStress();
         uint256 depthBefore = lens.poolAbsorbable(750);
-        assertGt(depthBefore, 0);
+        assertGt(depthBefore, LIQUIDATION, "the live depth covers the liquidation-sized sell");
+        int24 tickBefore = _tick();
         uint256 q0 = quote.balanceOf(address(this));
+        uint256 c0 = collateral.balanceOf(address(this));
         _swap(true, LIQUIDATION);
-        assertGt(quote.balanceOf(address(this)), q0, "liquidator was paid by the committed liquidity");
-        assertLt(lens.poolAbsorbable(750), depthBefore, "the sell consumed depth");
+        assertGt(
+            quote.balanceOf(address(this)), q0, "liquidator was paid by the committed liquidity"
+        );
+        assertEq(
+            c0 - collateral.balanceOf(address(this)), LIQUIDATION, "the whole sell was absorbed"
+        );
+        // Live depth is measured over a window that moves with spot, so it is not monotone under a sell (the same
+        // percentage window holds more collateral at a lower price). The consumption shows in the price instead.
+        assertLt(_tick(), tickBefore, "the sell moved the price through committed liquidity");
         // The liquidity that served it was still locked in the pool throughout.
         _expectLocked();
         vaults.claimRedeem(matured, address(this));
@@ -170,7 +179,11 @@ contract CrashTest is StressDriver {
         _toStress();
         assertEq(lens.exitingShares(v, 0), 0, "locked: nothing can leave inside the horizon");
         uint32 untilRelease = uint32(hook.stressInfo().earliestRelease - vm.getBlockTimestamp());
-        assertEq(lens.exitingShares(v, untilRelease), 1e17, "counted once the horizon reaches the release");
+        assertEq(
+            lens.exitingShares(v, untilRelease),
+            1e17,
+            "counted once the horizon reaches the release"
+        );
     }
 
     // ─── horizon netting around the lock ───

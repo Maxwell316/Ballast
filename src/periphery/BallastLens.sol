@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.26;
 
+import {Currency} from "@uniswap/v4-core/src/types/Currency.sol";
 import {PoolId} from "@uniswap/v4-core/src/types/PoolId.sol";
 import {IPoolManager} from "@uniswap/v4-core/src/interfaces/IPoolManager.sol";
 import {SqrtPriceMath} from "@uniswap/v4-core/src/libraries/SqrtPriceMath.sol";
@@ -56,7 +57,9 @@ contract BallastLens is IBallastLens {
         shareToken = shareToken_;
         Config memory c = hook_.config();
         poolManager = IPoolManager(IPoolManagerGetter(address(hook_)).poolManager());
-        _collateralIs0 = hook_.collateralIsCurrency0();
+        // Derived from the immutable config, not from the hook's binding state, so a lens built before the pool is
+        // initialised cannot read the wrong liquidation direction.
+        _collateralIs0 = Currency.unwrap(c.collateral) < Currency.unwrap(c.quote);
         _bandTicks = BandMath.bpsToTicksDown(c.bandBps);
         _exitNotice = c.exitNotice;
     }

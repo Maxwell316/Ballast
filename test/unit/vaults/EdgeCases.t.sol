@@ -33,7 +33,8 @@ contract EdgeCasesTest is HookFixture {
     }
 
     function _poolLiq(uint256 v, uint256 slot, int24 lo, int24 hi) internal view returns (uint128) {
-        bytes32 k = PoolPosition.calculatePositionKey(address(vaults), lo, hi, bytes32((v << 8) | slot));
+        bytes32 k =
+            PoolPosition.calculatePositionKey(address(vaults), lo, hi, bytes32((v << 8) | slot));
         return IPoolManager(address(pm)).getPositionLiquidity(pid, k);
     }
 
@@ -151,7 +152,11 @@ contract EdgeCasesTest is HookFixture {
         vaults.seed(low, l, type(uint128).max, type(uint128).max, address(this));
         vaults.seed(high, l, type(uint128).max, type(uint128).max, address(this));
         uint256 depth = lens.vaultDepth(low);
-        assertEq(lens.committedDepth(), 1e16 + depth, "min(D, K) summed: K for the first, D for the second");
+        assertEq(
+            lens.committedDepth(),
+            1e16 + depth,
+            "min(D, K) summed: K for the first, D for the second"
+        );
     }
 
     function test_PreviewRedeem_MatchesExecution() public {

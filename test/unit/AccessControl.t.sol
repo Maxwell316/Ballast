@@ -30,7 +30,8 @@ contract AccessControlTest is HookFixture {
     // ─── (1) every selector is classified ───
 
     function _sel(string memory contractName) internal view returns (string[] memory) {
-        string memory json = vm.readFile(string.concat("out/", contractName, ".sol/", contractName, ".json"));
+        string memory json =
+            vm.readFile(string.concat("out/", contractName, ".sol/", contractName, ".json"));
         return vm.parseJsonKeys(json, ".methodIdentifiers");
     }
 
@@ -44,26 +45,37 @@ contract AccessControlTest is HookFixture {
     function _same(string memory name, string[] memory expected) internal view {
         string[] memory actual = _sel(name);
         for (uint256 i; i < actual.length; ++i) {
-            assertTrue(_has(expected, actual[i]), string.concat(name, ": unclassified external function ", actual[i]));
+            assertTrue(
+                _has(expected, actual[i]),
+                string.concat(name, ": unclassified external function ", actual[i])
+            );
         }
         for (uint256 i; i < expected.length; ++i) {
-            assertTrue(_has(actual, expected[i]), string.concat(name, ": stale entry ", expected[i]));
+            assertTrue(
+                _has(actual, expected[i]), string.concat(name, ": stale entry ", expected[i])
+            );
         }
     }
 
     function test_Hook_ExternalSurface() public view {
         string[] memory e = new string[](22);
         // PoolManager-only callbacks (BaseHook): the five Ballast uses plus the defaults that revert.
-        e[0] = "afterAddLiquidity(address,(address,address,uint24,int24,address),(int24,int24,int256,bytes32),int256,int256,bytes)";
+        e[0] =
+            "afterAddLiquidity(address,(address,address,uint24,int24,address),(int24,int24,int256,bytes32),int256,int256,bytes)";
         e[1] = "afterDonate(address,(address,address,uint24,int24,address),uint256,uint256,bytes)";
         e[2] = "afterInitialize(address,(address,address,uint24,int24,address),uint160,int24)";
-        e[3] = "afterRemoveLiquidity(address,(address,address,uint24,int24,address),(int24,int24,int256,bytes32),int256,int256,bytes)";
-        e[4] = "afterSwap(address,(address,address,uint24,int24,address),(bool,int256,uint160),int256,bytes)";
-        e[5] = "beforeAddLiquidity(address,(address,address,uint24,int24,address),(int24,int24,int256,bytes32),bytes)";
+        e[3] =
+            "afterRemoveLiquidity(address,(address,address,uint24,int24,address),(int24,int24,int256,bytes32),int256,int256,bytes)";
+        e[4] =
+            "afterSwap(address,(address,address,uint24,int24,address),(bool,int256,uint160),int256,bytes)";
+        e[5] =
+            "beforeAddLiquidity(address,(address,address,uint24,int24,address),(int24,int24,int256,bytes32),bytes)";
         e[6] = "beforeDonate(address,(address,address,uint24,int24,address),uint256,uint256,bytes)";
         e[7] = "beforeInitialize(address,(address,address,uint24,int24,address),uint160)";
-        e[8] = "beforeRemoveLiquidity(address,(address,address,uint24,int24,address),(int24,int24,int256,bytes32),bytes)";
-        e[9] = "beforeSwap(address,(address,address,uint24,int24,address),(bool,int256,uint160),bytes)";
+        e[8] =
+            "beforeRemoveLiquidity(address,(address,address,uint24,int24,address),(int24,int24,int256,bytes32),bytes)";
+        e[9] =
+            "beforeSwap(address,(address,address,uint24,int24,address),(bool,int256,uint160),bytes)";
         // vaults-only
         e[10] = "enterVaultOp()";
         // permissionless
@@ -180,17 +192,35 @@ contract AccessControlTest is HookFixture {
 
     function test_NoOwnerPauseUpgradeOrWithdrawalFunctionExists() public view {
         string[7] memory names = [
-            "BallastHook", "BallastVaults", "BallastStandby", "BallastShares", "BallastDepth", "BallastLens", "SupplyCapAdvisor"
+            "BallastHook",
+            "BallastVaults",
+            "BallastStandby",
+            "BallastShares",
+            "BallastDepth",
+            "BallastLens",
+            "SupplyCapAdvisor"
         ];
         string[12] memory banned = [
-            "owner", "transferOwnership", "renounceOwnership", "pause", "unpause", "upgrade",
-            "withdraw", "sweep", "rescue", "setImplementation", "setHook", "setVaults"
+            "owner",
+            "transferOwnership",
+            "renounceOwnership",
+            "pause",
+            "unpause",
+            "upgrade",
+            "withdraw",
+            "sweep",
+            "rescue",
+            "setImplementation",
+            "setHook",
+            "setVaults"
         ];
         for (uint256 i; i < names.length; ++i) {
             string[] memory sel = _sel(names[i]);
             for (uint256 j; j < sel.length; ++j) {
                 for (uint256 k; k < banned.length; ++k) {
-                    assertFalse(_startsWith(sel[j], banned[k]), string.concat(names[i], " has ", sel[j]));
+                    assertFalse(
+                        _startsWith(sel[j], banned[k]), string.concat(names[i], " has ", sel[j])
+                    );
                 }
             }
         }

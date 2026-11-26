@@ -9,7 +9,12 @@ import {BallastShares} from "../../../src/BallastShares.sol";
 import {HookFixture} from "../../utils/HookFixture.sol";
 import {ConfigFixture} from "../../utils/ConfigFixture.sol";
 import {IBallastErrors} from "../../../src/interfaces/IBallastErrors.sol";
-import {INITIAL_SHARES, MINIMUM_SHARES, MAX_POSITIONS, MAX_VAULTS} from "../../../src/types/Constants.sol";
+import {
+    INITIAL_SHARES,
+    MINIMUM_SHARES,
+    MAX_POSITIONS,
+    MAX_VAULTS
+} from "../../../src/types/Constants.sol";
 import {PositionView, Range, TicketView, VaultView} from "../../../src/types/Types.sol";
 
 /// @notice Vault lifecycle through the real hook, vaults and PoolManager: creation, seeding, proportional deposits,
@@ -48,8 +53,14 @@ contract VaultLifecycleTest is HookFixture {
         a[0] = l;
     }
 
-    function _poolLiquidity(uint256 v, uint256 slot, int24 lo, int24 hi) internal view returns (uint128) {
-        bytes32 k = PoolPosition.calculatePositionKey(address(vaults), lo, hi, bytes32((v << 8) | slot));
+    function _poolLiquidity(uint256 v, uint256 slot, int24 lo, int24 hi)
+        internal
+        view
+        returns (uint128)
+    {
+        bytes32 k = PoolPosition.calculatePositionKey(
+            address(vaults), lo, hi, bytes32((v << 8) | slot)
+        );
         return IPoolManager(address(pm)).getPositionLiquidity(pid, k);
     }
 
@@ -80,9 +91,13 @@ contract VaultLifecycleTest is HookFixture {
     function test_RevertWhen_CreateVault_InvalidInputs() public {
         vm.expectRevert(abi.encodeWithSelector(IBallastErrors.InvalidCuratorFee.selector, 2001));
         vaults.createVault(_ranges(-600, 600), 0, 2001);
-        vm.expectRevert(abi.encodeWithSelector(IBallastErrors.InvalidRange.selector, int24(-601), int24(600)));
+        vm.expectRevert(
+            abi.encodeWithSelector(IBallastErrors.InvalidRange.selector, int24(-601), int24(600))
+        );
         vaults.createVault(_ranges(-601, 600), 0, 0);
-        vm.expectRevert(abi.encodeWithSelector(IBallastErrors.InvalidRange.selector, int24(600), int24(600)));
+        vm.expectRevert(
+            abi.encodeWithSelector(IBallastErrors.InvalidRange.selector, int24(600), int24(600))
+        );
         vaults.createVault(_ranges(600, 600), 0, 0);
         vm.expectRevert(IBallastErrors.TooManyPositions.selector);
         vaults.createVault(new Range[](0), 0, 0);
@@ -112,7 +127,8 @@ contract VaultLifecycleTest is HookFixture {
     function test_Seed_MintsInitialSharesBurnsMinimum_AndVaultsOwnLiquidity() public {
         (uint256 c0, uint256 q0) = _bal(address(this));
         uint256 v = vaults.createVault(_ranges(-6000, 6000), 0, 0);
-        (uint128 a0, uint128 a1) = vaults.seed(v, _liqs(1e19), type(uint128).max, type(uint128).max, ALICE);
+        (uint128 a0, uint128 a1) =
+            vaults.seed(v, _liqs(1e19), type(uint128).max, type(uint128).max, ALICE);
         (uint256 c1, uint256 q1) = _bal(address(this));
         assertEq(c0 - c1, a0, "payer paid exactly the returned amount (collateral)");
         assertEq(q0 - q1, a1, "payer paid exactly the returned amount (quote)");
@@ -120,7 +136,9 @@ contract VaultLifecycleTest is HookFixture {
         assertEq(vaults.shareToken().balanceOf(ALICE, v), INITIAL_SHARES - MINIMUM_SHARES);
         assertEq(vaults.shareToken().balanceOf(address(0), v), MINIMUM_SHARES);
         assertEq(vaults.shareToken().totalSupply(v), INITIAL_SHARES);
-        assertEq(_poolLiquidity(v, 0, -6000, 6000), 1e19, "INV-1/INV-2: pool position equals recorded");
+        assertEq(
+            _poolLiquidity(v, 0, -6000, 6000), 1e19, "INV-1/INV-2: pool position equals recorded"
+        );
         assertEq(lens.positionsOf(v)[0].liquidity, 1e19);
     }
 
@@ -201,14 +219,18 @@ contract VaultLifecycleTest is HookFixture {
         uint256 t = vaults.requestRedeem(v, 1e17);
         assertEq(vaults.shareToken().balanceOf(BOB, v), 0, "shares left the owner");
         assertEq(vaults.shareToken().balanceOf(address(vaults), v), 1e17, "escrowed in the vaults");
-        assertEq(vaults.shareToken().totalSupply(v), INITIAL_SHARES + 1e17, "supply unchanged by escrow");
+        assertEq(
+            vaults.shareToken().totalSupply(v), INITIAL_SHARES + 1e17, "supply unchanged by escrow"
+        );
         TicketView memory tv = lens.ticket(t);
         assertEq(tv.owner, BOB);
         assertEq(tv.shares, 1e17);
         assertEq(tv.maturity, vm.getBlockTimestamp() + 600);
 
         vm.prank(BOB);
-        vm.expectRevert(abi.encodeWithSelector(IBallastErrors.TicketNotMature.selector, tv.maturity));
+        vm.expectRevert(
+            abi.encodeWithSelector(IBallastErrors.TicketNotMature.selector, tv.maturity)
+        );
         vaults.claimRedeem(t, BOB);
 
         vm.warp(tv.maturity);
@@ -293,7 +315,49 @@ contract VaultLifecycleTest is HookFixture {
         (uint256 ca, uint256 qa) = _bal(BOB);
         assertLe(ca, cb, "collateral: round trip never profits");
         assertLe(qa, qb, "quote: round trip never profits");
-        assertGe(lens.positionsOf(v)[0].liquidity, liqBefore, "vault liquidity never shrinks (rounding favours it)");
+        assertGe(
+            lens.positionsOf(v)[0].liquidity,
+            liqBefore,
+            "vault liquidity never shrinks (rounding favours it)"
+        );
+    }
+
+    /// @notice Odd liquidity plus a non-zero idle balance, so the rounding is exercised: the deposit adds exactly
+    /// `ceil(L * shares / supply)` and the redeem removes exactly `floor(L * shares / supply)`, both in the vault's favour.
+    function testFuzz_DepositRedeem_ExactCeilAndFloor_WithOddLiquidityAndIdle(
+        uint256 liqSeed,
+        uint256 sharesSeed
+    ) public {
+        uint128 seedLiq = uint128(bound(liqSeed, 1e18, 1e19)) | 1; // odd
+        uint256 v = _provide(-6000, 6000, seedLiq);
+        // Earn trading fees both ways, then crystallize them into idle.
+        _swap(true, 1e16);
+        _swap(false, 5e15);
+        vaults.checkpoint(v);
+        VaultView memory vv = lens.vault(v);
+        assertGt(vv.idle0 + vv.idle1, 0, "idle is non-zero");
+
+        uint128 shares = uint128(bound(sharesSeed, 1e6, 1e18));
+        uint256 supply = vv.totalShares;
+        uint128 l0 = lens.positionsOf(v)[0].liquidity;
+        (uint256 cb, uint256 qb) = _bal(BOB);
+        _enter(BOB, v, shares);
+        uint128 l1 = lens.positionsOf(v)[0].liquidity;
+        assertEq(l1 - l0, (uint256(l0) * shares + supply - 1) / supply, "deposit adds ceil(L*s/S)");
+
+        vm.prank(BOB);
+        uint256 t = vaults.requestRedeem(v, shares);
+        vm.warp(vm.getBlockTimestamp() + 600);
+        uint128 l1b = lens.positionsOf(v)[0].liquidity;
+        uint256 supply1 = lens.vault(v).totalShares;
+        vm.prank(BOB);
+        vaults.claimRedeem(t, BOB);
+        uint128 l2 = lens.positionsOf(v)[0].liquidity;
+        assertEq(l1b - l2, (uint256(l1b) * shares) / supply1, "redeem removes floor(L*s/S)");
+        assertGe(l2, l0, "vault liquidity never shrinks over the round trip");
+        (uint256 ca, uint256 qa) = _bal(BOB);
+        assertLe(ca, cb, "collateral: round trip never profits");
+        assertLe(qa, qb, "quote: round trip never profits");
     }
 
     // ─── donations (T2) ───

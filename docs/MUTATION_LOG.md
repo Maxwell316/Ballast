@@ -138,3 +138,16 @@ Scratch mutations of `BallastHook._beforeAddLiquidity` / `_beforeRemoveLiquidity
 - **`sender != vaults` changed to `sender == vaults`** (both callbacks): caught by 5 tests (the vaults' own `seed` in `setUp` reverts, plus the plain-router add test no longer sees a revert).
 - **The `sender` check removed** (both callbacks): caught by 4 tests (`test_RevertWhen_ExternalAddLiquidity_PlainRouter`, `test_RevertWhen_ExternalRemoveLiquidity_PlainRouter`, `test_RevertWhen_ArbitraryUnlockContract_Adds`, `test_RevertWhen_ArbitraryUnlockContract_RemovesOrPokes`).
 The real PositionManager and the deployed routers are covered by `test/fork/HookOnlyLiquidityFork.t.sol` (run against a fork of chain 1301, block 68,788,256: 5 tests pass).
+
+## M5: `BallastVaults`, `BallastStandby`, `BallastLens` (2026-11-26)
+17 scratch mutations (`tools/mutate.py`), run against the whole non-fork suite excluding the slow differential, invariant, fork, size and gas suites. Final state: **17 caught, 0 surviving.**
+
+Caught on the first run (10): maturity check off by one; claim ignores the lock; deposit allowed outside CALM; breach flag one second late; accrual ignores breach; rerange coverage check removed; commitment decrease immediate; `requestRedeem` does not escrow; curator cut credited to idle; reward not capped by the fund.
+
+Survived on the first run and fixed (3):
+- **Deposit rounds liquidity down** and **redeem rounds liquidity up.** `testFuzz_DepositThenRedeem_NeverReturnsMoreThanPaid` used liquidity that divides evenly by the supply, so ceil and floor coincide. Added `testFuzz_DepositRedeem_ExactCeilAndFloor_WithOddLiquidityAndIdle` (odd seeded liquidity, idle earned through swaps and a checkpoint, exact `ceil(L*s/S)` and `floor(L*s/S)` assertions). Both now caught.
+- **Eligible uses the larger sample.** No test had a sample below the commitment at the end of an interval. Added `StandbySampling.t.sol` (narrow vault, market pushed into the band, reward equals `RewardMath.accrue(min(poolAbsorbable, vaultDepth, commitment), rate, dt)`). Now caught.
+
+Not reported by the first run, re-run after the fixes (4, all caught): live depth not netted for exits; exit netting ignoring `earliestRelease`; rerange dust cap removed; fees not crystallized before a deposit.
+
+**A finding that is not a mutation:** writing the sampling test exposed a real lens defect, now fixed (ADR-058): the lens captured the collateral direction at construction, before the pool was bound.

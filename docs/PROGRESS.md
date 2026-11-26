@@ -3,27 +3,27 @@
 **Read with `CLAUDE.md`. A fresh session can resume from these two files alone.**
 
 ## Current milestone
-M3 (vault core) in progress. The split-custody work is complete (ADR-045, ADR-050..054) and merged to `main`; M3 tests, then M4..M11, continue in continuous mode.
+M5 complete and reported; M8 (hardening) next. Continuous mode (ADR-045..058).
 
 ## Done
-- M0-M2 (scaffold, maths libraries, hook skeleton) and the S1 pre-registration (`analysis/PREREGISTRATION.md`, commit f3d4a05; never edit).
-- Split custody: `BallastHook` (callbacks, oracle, stress, gate, `enterVaultOp`, `evaluateStress`), `BallastVaults` (all vault operations, positions, claims, `extsload`), `BallastShares` (ERC-6909 shares), `BallastStandby` (fund, rate, accrual), `BallastDepth` (stateless depth maths), `BallastLens` (decoded views, depth, previews), `SupplyCapAdvisor`.
-- Deployment (ADR-050): vaults deployed first at a nonce-predicted address, hook mined over the full creation code and CREATE2-deployed, binding checked in the hook's constructor and by `script/VerifyBinding.s.sol`. `DeployBallast` runs end to end on a fork of chain 1301 (`test/fork/DeployBallastScript.t.sol`).
-- Tests: M2 suite adapted and green; `LiquidityGate` (G-1 local, T19), `HookOnlyLiquidityFork` (real PositionManager and routers on the 1301 fork), `LensLayout`, `Sizes`, `BallastDepthDifferential`. Gate mutations (`!=`, check removed) caught (MUTATION_LOG.md).
-- Sizes (`via_ir`, `optimizer_runs = 200`): hook 14,027 runtime / 18,117 initcode; vaults 24,268 / 36,194 (margin 308 to EIP-170, inside the ADR-051 band); standby 3,105; shares 2,022; depth 2,889. Enforced by `test/unit/Sizes.t.sol`.
-
-## Known gaps in the vault surface (to close in M3-M7)
-- `flagBreach` was removed (ADR-052): breach is recorded at the first checkpoint after the grace period.
-- Vaults runtime has 308 bytes of headroom to EIP-170; further growth in the vaults needs the ADR-051 fallback cuts (b: `setCommitment`, c: `deployIdle`, d: `cancelRedeem`), asked in that order.
-- Gas budgets in `docs/TESTING.md` have not been re-measured for the split (do with the M3 gas tests).
+- M0-M2, the S1 pre-registration (`analysis/PREREGISTRATION.md`, never edit) and the split custody (hook, vaults, shares, standby, depth, lens, advisor).
+- M3-M6 suites: lifecycle, re-range, commitment, breach, standby accrual, `deployIdle`, the Crash scenario; invariants INV-1..4, 6, 8, 10, 12; access control (INV-13); hostile-token reentrancy; binding (T20); edge cases; lens layout; vault gas; sizes.
+- Mutation testing: 17 of 17 vault, standby and lens mutations caught (`docs/MUTATION_LOG.md`).
+- ADR-058: the lens derives the liquidation direction from the config, not from the hook's binding state.
+- 289 tests pass (`forge test --no-match-path "test/fork/*"`); `tools/compliance.py --check`: 85 of 86 IDs tested, one waiver (R-VIEW-5).
+- Sizes: vaults runtime 24,268 bytes (ceiling 24,300, margin test in `test/unit/Sizes.t.sol`). Further growth needs the pre-authorised cuts: (c) `deployIdle`, then (d) `cancelRedeem`, each with an ADR.
 
 ## Next
-1. M3 tests: lifecycle unit tests (seed/deposit/redeem/cancel/claim), proportional-share fuzz, rounding round-trip (INV-5), donation, rerange dust bound, alias check, shares ledger (INV-4), invariants INV-1..5.
-2. M4 coverage and breach flow, then M5 stress gate and exit queue; report at the end of M5.
-3. Continue M6..M11.
+1. M7 leftover: `docs/storage-layout.md` from `forge inspect`.
+2. M8: `Manipulation.t.sol` (T3, T4, T5, T6), Drought and Breach scenarios, failing-token mock, INV-9 and INV-11 in the handler, Slither triage into `docs/SLITHER_NOTES.md`, `forge snapshot`. Report at the end of M8.
+3. M9 deploy scripts (SeedVaults, FundStandby, CreatePool, RunCrash) and smoke tests; the user broadcasts.
+4. M10 simulation per `analysis/PREREGISTRATION.md`; M11 docs polish.
+
+## Gotchas
+Under `via_ir` read time with `vm.getBlockTimestamp()` (ADR-054). `vm.prank` and `vm.expectRevert` apply to the next external call, so cache getter results first. Use `vm.expectPartialRevert` for errors with arguments. Do not edit `src/` or `test/` while `tools/mutate.py` runs, and do not use `pgrep -f` in a shell whose own command line contains the pattern.
 
 ## Resume commands
 ```
-git checkout main && forge build --sizes && forge test --no-match-path "test/fork/*"
-RPC_URL=https://sepolia.unichain.org forge test --match-path "test/fork/*"    # public Unichain Sepolia RPC from config/addresses.json
+git checkout main && forge build --sizes --skip "test/**" --skip "script/**" && forge test --no-match-path "test/fork/*"
+RPC_URL=https://sepolia.unichain.org forge test --match-path "test/fork/*"
 ```

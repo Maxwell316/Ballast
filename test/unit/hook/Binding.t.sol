@@ -62,17 +62,26 @@ contract BindingTest is HookFixture, BoundDeploy {
         // Same hook address, different configuration (a wider band): the config hash differs.
         Config memory other = _cfg();
         other.bandBps = 900;
-        BallastVaults wrong = new BallastVaults(pm, IBallastHook(_hookAddr(salt, c, predicted)), other);
+        BallastVaults wrong =
+            new BallastVaults(pm, IBallastHook(_hookAddr(salt, c, predicted)), other);
         assertEq(address(wrong), predicted);
         vm.expectRevert(IBallastErrors.VaultsBindingMismatch.selector);
         new BallastHook{salt: salt}(pm, c, address(wrong));
     }
 
-    function _hookAddr(bytes32 salt, Config memory c, address vaultsAddr) internal view returns (address) {
+    function _hookAddr(bytes32 salt, Config memory c, address vaultsAddr)
+        internal
+        view
+        returns (address)
+    {
         return HookMiner.computeAddress(
             address(this),
             salt,
-            keccak256(abi.encodePacked(type(BallastHook).creationCode, abi.encode(address(pm), c, vaultsAddr)))
+            keccak256(
+                abi.encodePacked(
+                    type(BallastHook).creationCode, abi.encode(address(pm), c, vaultsAddr)
+                )
+            )
         );
     }
 
