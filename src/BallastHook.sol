@@ -200,6 +200,7 @@ contract BallastHook is BaseHook, IBallastPool {
         if (Transient.get(Transient.VAULT_OP)) revert VaultOpInSameTransaction();
         Transient.set(Transient.SWAPPED, true);
 
+        // slither-disable-next-line unused-return
         (, int24 tick,,) = poolManager.getSlot0(key.toId());
         if (Observations.update(_observations, _obs, _now(), tick, _observationInterval)) {
             _evaluateStress(tick);
@@ -212,9 +213,11 @@ contract BallastHook is BaseHook, IBallastPool {
     /// @inheritdoc IBallastPool
     function pokeStress() external {
         if (!_bound) revert PoolNotBound();
+        // slither-disable-next-line unused-return
         (, int24 tick,,) = poolManager.getSlot0(_poolId);
         // Price changes only at swaps, so the current tick is also the tick over [lastSwapTs, now]: this accumulation
         // is exact (MATH §4), and it lets the oracle make progress during swap droughts.
+        // slither-disable-next-line unused-return
         Observations.update(_observations, _obs, _now(), tick, _observationInterval);
         _evaluateStress(tick);
     }
@@ -234,13 +237,16 @@ contract BallastHook is BaseHook, IBallastPool {
     /// @inheritdoc IBallastPool
     function twapTick(uint32 window) external view returns (int24 tick, bool warm) {
         if (!_bound) revert PoolNotBound();
+        // slither-disable-next-line unused-return
         (, int24 current,,) = poolManager.getSlot0(_poolId);
+        // slither-disable-next-line unused-return
         return Observations.twapTick(_observations, _obs, _now(), window, current);
     }
 
     /// @inheritdoc IBallastPool
     function stressInfo() external view returns (StressInfo memory info) {
         if (!_bound) return info;
+        // slither-disable-next-line unused-return
         (, int24 current,,) = poolManager.getSlot0(_poolId);
         Evaluation memory e = _previewStress(current, true);
         info = StressInfo({
@@ -257,6 +263,7 @@ contract BallastHook is BaseHook, IBallastPool {
     /// @inheritdoc IBallastPool
     function lockState() external view returns (LockState state, uint40 lockedUntil) {
         if (!_bound) return (LockState.CALM, 0);
+        // slither-disable-next-line unused-return
         (, int24 current,,) = poolManager.getSlot0(_poolId);
         Evaluation memory e = _previewStress(current, false);
         return (e.ns, uint40(StressMachine.lockedUntil(e.ns, e.nc)));
@@ -312,6 +319,9 @@ contract BallastHook is BaseHook, IBallastPool {
     /// @dev Pure-read computation shared by the write path and the views, so a view always equals what the next
     /// evaluation would store (R-STR-7). When `full` is false and the oracle is cold, the TWAP lookups are skipped
     /// (the machine ignores them while cold, R-STR-6), which keeps the cold-start swap path cheap (ADR-038).
+    // slither-disable-start timestamp
+    // (the flagged comparisons are on enums and booleans; the only time-dependent maths is in the libraries, and the
+    // hook never uses `block.timestamp` for randomness or as a precise gate)
     function _previewStress(int24 currentTick, bool full)
         internal
         view
@@ -322,9 +332,11 @@ contract BallastHook is BaseHook, IBallastPool {
         e.anchorCursor = _anchorCursor;
         e.shortCursor = _shortCursor;
         if (e.warm || full) {
+            // slither-disable-next-line unused-return
             (e.anchor,, e.anchorCursor) = Observations.twapTickHinted(
                 _observations, _obs, nowTs, _anchorWindow, currentTick, e.anchorCursor
             );
+            // slither-disable-next-line unused-return
             (e.short,, e.shortCursor) = Observations.twapTickHinted(
                 _observations, _obs, nowTs, _shortWindow, currentTick, e.shortCursor
             );
@@ -365,9 +377,12 @@ contract BallastHook is BaseHook, IBallastPool {
             _anchorCursor = e.anchorCursor;
             _shortCursor = e.shortCursor;
         }
+        // slither-disable-next-line incorrect-equality
         if (e.ns != old) {
+            // slither-disable-next-line incorrect-equality
             if (e.ns == LockState.STRESS) {
                 emit StressEntered(e.anchor, e.short, e.nc.stressStartedAt);
+                // slither-disable-next-line incorrect-equality
             } else if (e.ns == LockState.RECOVERING) {
                 emit StressRecovering(e.nc.nowTs);
             } else {
@@ -376,6 +391,8 @@ contract BallastHook is BaseHook, IBallastPool {
         }
         if (e.lockJustExpired) emit LockExpired(e.nc.nowTs);
     }
+
+    // slither-disable-end timestamp
 
     // ─── Transient guards (D-9, R-TX-2, R-TX-3) ───
 
