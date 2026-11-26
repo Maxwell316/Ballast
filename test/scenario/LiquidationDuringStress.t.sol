@@ -44,7 +44,7 @@ contract LiquidationDuringStressTest is StressDriver {
         _crash();
         _stepUntil(LockState.STRESS, 20);
         uint40 started = hook.stressStorage().stressStartedAt;
-        while (block.timestamp < started + 30 minutes + 120) _step(60);
+        while (vm.getBlockTimestamp() < started + 30 minutes + 120) _step(60);
         assertFalse(hook.stressInfo().lockActive, "expired");
         _liquidate();
     }
@@ -55,7 +55,7 @@ contract LiquidationDuringStressTest is StressDriver {
         _setUpStress(1 hours);
         _warmUp();
         _crash();
-        vm.warp(block.timestamp + 200);
+        vm.warp(vm.getBlockTimestamp() + 200);
         assertEq(uint8(_stored()), uint8(LockState.CALM));
         _liquidate(); // this swap's beforeSwap evaluates and stores STRESS
         assertEq(uint8(_stored()), uint8(LockState.STRESS));

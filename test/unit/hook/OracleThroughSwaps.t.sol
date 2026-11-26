@@ -19,14 +19,14 @@ contract OracleThroughSwapsTest is HookFixture {
         _setUpDefault(true, c, 0);
         _provide(-12_000, 12_000, 1e19);
         model = new ObservationsModel();
-        model.init(block.timestamp, 0);
-        initTs = uint40(block.timestamp);
+        model.init(vm.getBlockTimestamp(), 0);
+        initTs = uint40(vm.getBlockTimestamp());
     }
 
     /// @dev One real swap; the model learns the post-swap tick at the swap's timestamp.
     function _modelSwap(bool sellCollateral, uint256 amount) internal {
         _swap(sellCollateral, amount);
-        model.swap(block.timestamp, _tick());
+        model.swap(vm.getBlockTimestamp(), _tick());
     }
 
     function _logicalSnapshot(uint256 i) internal view returns (Observations.Observation memory) {
@@ -38,7 +38,7 @@ contract OracleThroughSwapsTest is HookFixture {
 
     /// @notice Two swaps in one timestamp accumulate once; the second adds no weight (R-ORC-1).
     function test_SameTimestampDoubleSwap_AccumulatesOnce() public {
-        vm.warp(block.timestamp + 100);
+        vm.warp(vm.getBlockTimestamp() + 100);
         _modelSwap(true, 1e17);
         Observations.State memory a = hook.obsState();
         int24 tickAfterFirst = _tick();
@@ -55,16 +55,16 @@ contract OracleThroughSwapsTest is HookFixture {
 
     /// @notice A swap pair that moves the price and moves it back within one block carries zero weight.
     function test_InBlockRoundTrip_HasNoOracleWeight() public {
-        vm.warp(block.timestamp + 100);
+        vm.warp(vm.getBlockTimestamp() + 100);
         int24 before_ = _tick();
         _modelSwap(true, 3e17);
         _modelSwap(false, 1e8);
         // Time passes with the (displaced) tick.
-        vm.warp(block.timestamp + 50);
+        vm.warp(vm.getBlockTimestamp() + 50);
         _modelSwap(true, 1e6);
         Observations.State memory st = hook.obsState();
         // Accumulated: tick 0 for 100 s (pre-swap tick of the first swap), then the displaced tick for 50 s.
-        assertEq(int256(st.cumulative), model.cumulativeAt(block.timestamp), "exact vs model");
+        assertEq(int256(st.cumulative), model.cumulativeAt(vm.getBlockTimestamp()), "exact vs model");
         assertEq(before_, 0);
     }
 
@@ -72,7 +72,7 @@ contract OracleThroughSwapsTest is HookFixture {
     function test_SparseSwaps_AccumulatorExact() public {
         uint256[6] memory gaps = [uint256(7), 3600, 1, 86_400, 59, 61];
         for (uint256 i; i < gaps.length; ++i) {
-            vm.warp(block.timestamp + gaps[i]);
+            vm.warp(vm.getBlockTimestamp() + gaps[i]);
             _modelSwap(i % 2 == 0, 2e16 + i * 1e15);
         }
         Observations.State memory st = hook.obsState();
@@ -94,11 +94,11 @@ contract OracleThroughSwapsTest is HookFixture {
             uint256 x = uint256(keccak256(abi.encode(seed, i)));
             uint256 mode = x % 8;
             vm.warp(
-                block.timestamp + (mode == 0 ? 0 : mode == 1 ? (x >> 8) % 7200 : (x >> 8) % 90 + 1)
+                vm.getBlockTimestamp() + (mode == 0 ? 0 : mode == 1 ? (x >> 8) % 7200 : (x >> 8) % 90 + 1)
             );
             _modelSwap((x >> 100) % 2 == 0, 1e12 + (x >> 120) % 4e16);
         }
-        vm.warp(block.timestamp + (uint256(keccak256(abi.encode(seed, "q"))) % 120));
+        vm.warp(vm.getBlockTimestamp() + (uint256(keccak256(abi.encode(seed, "q"))) % 120));
 
         Observations.State memory st = hook.obsState();
         assertEq(int256(st.cumulative), model.cumulativeAt(st.lastSwapTs), "accumulator exact");
@@ -120,10 +120,10 @@ contract OracleThroughSwapsTest is HookFixture {
     function _checkTwap(uint32 window) internal view {
         (int24 got, bool warm) = hook.twapTick(window);
         if (!warm) return;
-        int256 exact = model.twap(block.timestamp, window);
+        int256 exact = model.twap(vm.getBlockTimestamp(), window);
         int256 diff = int256(got) - exact;
         uint256 err = uint256(diff < 0 ? -diff : diff);
-        uint256 target = block.timestamp - window;
+        uint256 target = vm.getBlockTimestamp() - window;
         uint256 aTs;
         uint256 bTs = hook.obsState().lastSwapTs;
         for (uint256 i; i < hook.obsLength(); ++i) {
@@ -147,21 +147,21 @@ contract OracleThroughSwapsTest is HookFixture {
     function test_AdversarialSwapTiming_ErrorBoundHolds() public {
         uint256 maxErr;
         for (uint256 k; k < 70; ++k) {
-            vm.warp(block.timestamp + 1);
+            vm.warp(vm.getBlockTimestamp() + 1);
             _modelSwap(true, 4e17); // push down right after a boundary
-            vm.warp(block.timestamp + 57);
+            vm.warp(vm.getBlockTimestamp() + 57);
             _modelSwap(false, 1e18); // pull back just before the next
-            vm.warp(block.timestamp + 2);
+            vm.warp(vm.getBlockTimestamp() + 2);
             _modelSwap(true, 1e5); // the boundary swap writes the snapshot
         }
         // Query off the snapshot grid so that window starts fall inside a snapshot interval.
-        vm.warp(block.timestamp + 17);
+        vm.warp(vm.getBlockTimestamp() + 17);
         Observations.State memory st = hook.obsState();
         assertEq(int256(st.cumulative), model.cumulativeAt(st.lastSwapTs), "accumulator exact");
         for (uint32 w = 300; w <= 3000; w += 300) {
             (int24 got, bool warm) = hook.twapTick(w);
             assertTrue(warm);
-            int256 diff = int256(got) - model.twap(block.timestamp, w);
+            int256 diff = int256(got) - model.twap(vm.getBlockTimestamp(), w);
             uint256 err = uint256(diff < 0 ? -diff : diff);
             if (err > maxErr) maxErr = err;
             _checkTwap(w);
@@ -177,7 +177,7 @@ contract OracleThroughSwapsTest is HookFixture {
         (, bool warm) = hook.twapTick(3600);
         assertFalse(warm);
         for (uint256 i; i < 62; ++i) {
-            vm.warp(block.timestamp + 60);
+            vm.warp(vm.getBlockTimestamp() + 60);
             _modelSwap(i % 2 == 0, 1e12);
         }
         (, warm) = hook.twapTick(3600);

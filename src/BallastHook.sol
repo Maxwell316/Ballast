@@ -20,7 +20,6 @@ import {HookPermissions} from "./libraries/HookPermissions.sol";
 import {Observations} from "./libraries/Observations.sol";
 import {StressMachine} from "./libraries/StressMachine.sol";
 import {Transient} from "./libraries/Transient.sol";
-import {BallastVaults} from "./BallastVaults.sol";
 import {IBallastHook} from "./interfaces/IBallastHook.sol";
 import {IBallastPool} from "./interfaces/IBallastPool.sol";
 import {Config, LockState, StressInfo} from "./types/Types.sol";
@@ -36,6 +35,12 @@ import {Config, LockState, StressInfo} from "./types/Types.sol";
 /// Swaps are never blockable by Ballast logic (R-STR-10): `_beforeSwap` reverts only on the D-9 guard. Everything
 /// else on that path is total: the oracle update cannot overflow inside the documented domain (MATH §4), the stress
 /// transition is a pure total function (`StressMachine.next`), and no division has a variable divisor.
+/// @dev Binding surface of the vaults checked once at construction (ADR-050).
+interface IVaultsBinding {
+    function hook() external view returns (address);
+    function configHash() external view returns (bytes32);
+}
+
 contract BallastHook is BaseHook, IBallastHook {
     using StateLibrary for IPoolManager;
     using PoolIdLibrary for PoolKey;
@@ -89,7 +94,10 @@ contract BallastHook is BaseHook, IBallastHook {
 
     /// @param poolManager_ The v4 PoolManager.
     /// @param cfg Immutable configuration; validated by `ConfigLib.validate` (R-CFG-1).
-    constructor(IPoolManager poolManager_, Config memory cfg) BaseHook(poolManager_) {
+    /// @param vaults_ The already-deployed custody contract this hook admits (ADR-050). Its bindings are checked here.
+    constructor(IPoolManager poolManager_, Config memory cfg, address vaults_)
+        BaseHook(poolManager_)
+    {
         ConfigLib.validate(cfg);
         _collateral = cfg.collateral;
         _quote = cfg.quote;
@@ -113,8 +121,14 @@ contract BallastHook is BaseHook, IBallastHook {
         _maxStandbyRate = cfg.maxStandbyRate;
         _enterTicks = BandMath.bpsToTicksNearest(cfg.stressEnterBps);
         _exitTicks = BandMath.bpsToTicksNearest(cfg.stressExitBps);
-        // The custody contract is created here, so the two immutable addresses are not circular (ADR-045).
-        vaults = address(new BallastVaults(poolManager_, IBallastHook(address(this)), cfg));
+        // The vaults were deployed first with this hook's (mined) address as an immutable. These constructor-time
+        // staticcalls are the hook's only calls into the vaults (ADR-050, T20).
+        if (vaults_.code.length == 0) revert VaultsNotDeployed(vaults_);
+        if (IVaultsBinding(vaults_).hook() != address(this)) revert VaultsBindingMismatch();
+        if (IVaultsBinding(vaults_).configHash() != keccak256(abi.encode(cfg))) {
+            revert VaultsBindingMismatch();
+        }
+        vaults = vaults_;
     }
 
     /// @notice The five permissions Ballast needs and nothing else (D-5). No return-delta flags.

@@ -19,6 +19,7 @@ import {MockERC20} from "./MockERC20.sol";
 import {ConfigFixture} from "./ConfigFixture.sol";
 import {BallastHookHarness} from "./BallastHookHarness.sol";
 import {BallastVaults} from "../../src/BallastVaults.sol";
+import {IBallastHook} from "../../src/interfaces/IBallastHook.sol";
 import {Config, Range} from "../../src/types/Types.sol";
 
 /// @notice Shared fixture: a real local PoolManager, mock tokens in a chosen decimals/ordering scenario, and a
@@ -68,11 +69,13 @@ abstract contract HookFixture is Test {
         c.collateral = Currency.wrap(address(collateral));
         c.quote = Currency.wrap(address(quote));
         cfg = c;
+        vaults = new BallastVaults(pm, IBallastHook(HOOK_ADDR), c);
         deployCodeTo(
-            "BallastHookHarness.sol:BallastHookHarness", abi.encode(address(pm), c), HOOK_ADDR
+            "BallastHookHarness.sol:BallastHookHarness",
+            abi.encode(address(pm), c, address(vaults)),
+            HOOK_ADDR
         );
         hook = BallastHookHarness(HOOK_ADDR);
-        vaults = BallastVaults(hook.vaults());
         (Currency c0, Currency c1) =
             collateralIs0 ? (c.collateral, c.quote) : (c.quote, c.collateral);
         key = PoolKey(c0, c1, c.fee, c.tickSpacing, IHooks(HOOK_ADDR));

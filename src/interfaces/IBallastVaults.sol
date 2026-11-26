@@ -1,22 +1,15 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.26;
 
-import {IERC6909Claims} from "@uniswap/v4-core/src/interfaces/external/IERC6909Claims.sol";
 import {IBallastErrors} from "./IBallastErrors.sol";
 import {IBallastEvents} from "./IBallastEvents.sol";
-import {
-    CuratorRecord,
-    PositionView,
-    Range,
-    TicketView,
-    VaultView
-} from "../types/Types.sol";
+import {Range} from "../types/Types.sol";
 
 /// @title IBallastVaults
 /// @notice Public surface of the custody contract (ADR-045). Behaviour is defined in docs/SPEC.md.
-/// @dev The ERC-6909 surface (`balanceOf`, `transfer`, `approve`, `setOperator`, ...) is the vault share token,
-/// id = vaultId. Shares are distinct from PoolManager claims. `totalSupply` is tracked by the hook.
-interface IBallastVaults is IBallastErrors, IBallastEvents, IERC6909Claims {
+/// @dev The vault share token (ERC-6909, id = vaultId) is the separate `BallastShares` contract (`shareToken()`).
+/// Shares are distinct from PoolManager claims. State reads go through `extsload`; the decoded views live in the lens.
+interface IBallastVaults is IBallastErrors, IBallastEvents {
     // ─── Vault lifecycle ───
 
     /// @notice Creates an empty vault. The caller becomes its curator. Ranges are stored; no liquidity exists yet.
@@ -73,21 +66,8 @@ interface IBallastVaults is IBallastErrors, IBallastEvents, IERC6909Claims {
     /// @notice Accrues standby rewards and crystallizes trading fees for a vault.
     function checkpoint(uint256 vaultId) external;
 
-    /// @notice Flags a vault whose coverage stayed below its commitment past `rerangeGrace`.
-    function flagBreach(uint256 vaultId) external;
+    // ─── Reads ───
 
-    // ─── Views ───
-
-    /// @notice Open ticket shares of a vault whose effective exit (`max(maturity, earliestUnlock)`) is within
-    /// `horizon` seconds. Conservative: never below the exact figure (ADR-045).
-    function exitingShares(uint256 vaultId, uint32 horizon) external view returns (uint256);
-
-    function vaultCount() external view returns (uint256);
-    function vault(uint256 vaultId) external view returns (VaultView memory);
-    function positionsOf(uint256 vaultId) external view returns (PositionView[] memory);
-    function ticket(uint256 ticketId) external view returns (TicketView memory);
-    function record(uint256 vaultId) external view returns (CuratorRecord memory);
-
-    /// @notice Total supply of a vault's shares, including escrow and the burned minimum.
-    function totalSupply(uint256 vaultId) external view returns (uint256);
+    /// @notice Reads `n` consecutive raw storage slots from `slot`. The lens decodes vault state with it (ADR-050).
+    function extsload(bytes32 slot, uint256 n) external view returns (bytes32[] memory);
 }

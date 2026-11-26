@@ -4,6 +4,11 @@ pragma solidity 0.8.26;
 /// @title IBallastErrors
 /// @notice Custom errors of the Ballast hook. No revert strings are used anywhere.
 interface IBallastErrors {
+    /// @notice The hook was constructed with an address that has no code (ADR-050).
+    error VaultsNotDeployed(address vaults);
+    /// @notice The vaults' immutable hook address or config hash does not match this hook (ADR-050, T20).
+    error VaultsBindingMismatch();
+
     error NotCurator(address caller);
     error NotSponsor(address caller);
     error NotVaults(address caller);

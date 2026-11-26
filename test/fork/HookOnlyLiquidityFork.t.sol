@@ -21,6 +21,7 @@ import {ConfigFixture} from "../utils/ConfigFixture.sol";
 import {BallastHookHarness} from "../utils/BallastHookHarness.sol";
 import {IBallastErrors} from "../../src/interfaces/IBallastErrors.sol";
 import {BallastVaults} from "../../src/BallastVaults.sol";
+import {IBallastHook} from "../../src/interfaces/IBallastHook.sol";
 import {Config, Range} from "../../src/types/Types.sol";
 
 interface IPositionManagerLike {
@@ -80,11 +81,13 @@ contract HookOnlyLiquidityForkTest is Test {
         Config memory c = ConfigFixture.compressed();
         c.collateral = Currency.wrap(address(collateral));
         c.quote = Currency.wrap(address(quote));
+        vaults = new BallastVaults(pm, IBallastHook(HOOK_ADDR), c);
         deployCodeTo(
-            "BallastHookHarness.sol:BallastHookHarness", abi.encode(address(pm), c), HOOK_ADDR
+            "BallastHookHarness.sol:BallastHookHarness",
+            abi.encode(address(pm), c, address(vaults)),
+            HOOK_ADDR
         );
         hook = BallastHookHarness(HOOK_ADDR);
-        vaults = BallastVaults(hook.vaults());
         key = PoolKey(c.collateral, c.quote, c.fee, c.tickSpacing, IHooks(HOOK_ADDR));
         pid = key.toId();
 
@@ -149,7 +152,7 @@ contract HookOnlyLiquidityForkTest is Test {
         );
         params[1] = abi.encode(key.currency0, key.currency1);
         vm.expectRevert(_forbidden(IHooks.beforeAddLiquidity.selector));
-        positionManager.modifyLiquidities(abi.encode(actions, params), block.timestamp + 1);
+        positionManager.modifyLiquidities(abi.encode(actions, params), vm.getBlockTimestamp() + 1);
     }
 
     /// @notice The same PositionManager also cannot add into a range the hook already occupies.
@@ -177,7 +180,7 @@ contract HookOnlyLiquidityForkTest is Test {
         );
         params[1] = abi.encode(key.currency0, key.currency1);
         vm.expectRevert(_forbidden(IHooks.beforeAddLiquidity.selector));
-        positionManager.modifyLiquidities(abi.encode(actions, params), block.timestamp + 1);
+        positionManager.modifyLiquidities(abi.encode(actions, params), vm.getBlockTimestamp() + 1);
     }
 
     /// @notice The deployed liquidity router cannot add, remove, or poke.
@@ -208,7 +211,7 @@ contract HookOnlyLiquidityForkTest is Test {
 
     /// @notice A swap through the deployed router passes the hook and writes the oracle on the deployed chain.
     function test_Swap_ThroughDeployedRouter_WritesOracle() public {
-        vm.warp(block.timestamp + 120);
+        vm.warp(vm.getBlockTimestamp() + 120);
         swapRouter.swap(
             key,
             SwapParams({
@@ -219,7 +222,7 @@ contract HookOnlyLiquidityForkTest is Test {
             PoolSwapTest.TestSettings({takeClaims: false, settleUsingBurn: false}),
             ""
         );
-        assertEq(hook.obsState().lastSwapTs, uint40(block.timestamp));
+        assertEq(hook.obsState().lastSwapTs, uint40(vm.getBlockTimestamp()));
         assertEq(hook.obsLength(), 2, "seed + one snapshot");
     }
 }

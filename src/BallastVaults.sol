@@ -2,11 +2,9 @@
 pragma solidity 0.8.26;
 
 import {CurrencySettler} from "@openzeppelin/uniswap-hooks/utils/CurrencySettler.sol";
-import {ERC6909} from "@uniswap/v4-core/src/ERC6909.sol";
 import {IUnlockCallback} from "@uniswap/v4-core/src/interfaces/callback/IUnlockCallback.sol";
 import {IHooks} from "@uniswap/v4-core/src/interfaces/IHooks.sol";
 import {IPoolManager} from "@uniswap/v4-core/src/interfaces/IPoolManager.sol";
-import {SqrtPriceMath} from "@uniswap/v4-core/src/libraries/SqrtPriceMath.sol";
 import {StateLibrary} from "@uniswap/v4-core/src/libraries/StateLibrary.sol";
 import {TickMath} from "@uniswap/v4-core/src/libraries/TickMath.sol";
 import {BalanceDelta} from "@uniswap/v4-core/src/types/BalanceDelta.sol";
@@ -15,9 +13,10 @@ import {PoolId, PoolIdLibrary} from "@uniswap/v4-core/src/types/PoolId.sol";
 import {PoolKey} from "@uniswap/v4-core/src/types/PoolKey.sol";
 import {ModifyLiquidityParams} from "@uniswap/v4-core/src/types/PoolOperation.sol";
 import {FixedPointMathLib} from "solady/utils/FixedPointMathLib.sol";
+import {BallastDepth} from "./BallastDepth.sol";
+import {BallastShares} from "./BallastShares.sol";
 import {BallastStandby} from "./BallastStandby.sol";
 import {BandMath} from "./libraries/BandMath.sol";
-import {DepthMath} from "./libraries/DepthMath.sol";
 import {RewardMath} from "./libraries/RewardMath.sol";
 import {Transient} from "./libraries/Transient.sol";
 import {VaultMath} from "./libraries/VaultMath.sol";
@@ -46,10 +45,12 @@ import {
 /// @title BallastVaults
 /// @notice Custody contract of a Ballast pool (ADR-045). It owns every position in the pool, the vault shares
 /// (ERC-6909), the PoolManager claims (idle balances, curator fees, standby fund) and all vault operations.
-/// @dev Created by `BallastHook` in its constructor; the hook admits only this address in
-/// `beforeAdd/RemoveLiquidity` (G-1). Calls into the hook are limited to `enterVaultOp()` and `evaluateStress()`; the
-/// hook never calls back. No owner, admin, proxy or `delegatecall`.
-contract BallastVaults is ERC6909, IUnlockCallback, IBallastVaults {
+/// @dev Deployed before the hook, at the address the hook's constructor is given (ADR-050); the hook admits only that
+/// address in `beforeAdd/RemoveLiquidity` (G-1). Calls into the hook are limited to `enterVaultOp()`,
+/// `evaluateStress()` and `stressInfo()`; after construction the hook never calls back. Every entrypoint that takes a
+/// vault id needs an existing vault, and vaults are created only after the pool is bound, which requires the hook
+/// to have code. No owner, admin, proxy or `delegatecall`.
+contract BallastVaults is IUnlockCallback, IBallastVaults {
     using CurrencySettler for Currency;
     using PoolIdLibrary for PoolKey;
     using StateLibrary for IPoolManager;
@@ -61,6 +62,12 @@ contract BallastVaults is ERC6909, IUnlockCallback, IBallastVaults {
     IBallastHook public immutable hook;
     /// @notice The standby pool this contract created (ADR-046). Vaults call it only through `accrue`.
     IBallastStandby public immutable standby;
+    /// @notice The share token this contract created (ADR-050). Only this contract can mint, burn or escrow.
+    BallastShares public immutable shareToken;
+    /// @notice The stateless depth calculator this contract created (ADR-050).
+    BallastDepth public immutable depthCalc;
+    /// @notice `keccak256(abi.encode(config))`; the hook checks it at construction (ADR-050).
+    bytes32 public immutable configHash;
     Currency private immutable _collateral;
     Currency private immutable _quote;
     uint24 private immutable _fee;
@@ -76,7 +83,7 @@ contract BallastVaults is ERC6909, IUnlockCallback, IBallastVaults {
     PoolId private immutable _poolId;
 
     /// @param poolManager_ The v4 PoolManager.
-    /// @param hook_ The hook that created this contract.
+    /// @param hook_ The hook this contract is bound to; deployed afterwards at this (mined) address (ADR-050).
     /// @param cfg The hook's validated configuration.
     constructor(IPoolManager poolManager_, IBallastHook hook_, Config memory cfg) {
         poolManager = poolManager_;
@@ -89,7 +96,10 @@ contract BallastVaults is ERC6909, IUnlockCallback, IBallastVaults {
         _rerangeGrace = cfg.rerangeGrace;
         _maxAccrualInterval = cfg.maxAccrualInterval;
         _maxCuratorFeeBps = cfg.maxCuratorFeeBps;
+        configHash = keccak256(abi.encode(cfg));
         standby = IBallastStandby(address(new BallastStandby(poolManager_, address(this), cfg)));
+        shareToken = new BallastShares();
+        depthCalc = new BallastDepth();
         _bandTicks = BandMath.bpsToTicksDown(cfg.bandBps);
         bool c0 = Currency.unwrap(cfg.collateral) < Currency.unwrap(cfg.quote);
         _collateralIs0 = c0;
@@ -105,9 +115,17 @@ contract BallastVaults is ERC6909, IUnlockCallback, IBallastVaults {
 
     /// @dev Non-reentrant lock held in transient storage, released at the end of the call (R-TX-3).
     modifier nonReentrant() {
+        _lock();
+        _;
+        _release();
+    }
+
+    function _lock() private {
         if (Transient.get(Transient.LOCK)) revert Reentrancy();
         Transient.set(Transient.LOCK, true);
-        _;
+    }
+
+    function _release() private {
         Transient.set(Transient.LOCK, false);
     }
 
@@ -197,7 +215,6 @@ contract BallastVaults is ERC6909, IUnlockCallback, IBallastVaults {
     mapping(uint256 => VaultData) internal _vaults;
     mapping(uint256 => Position[]) internal _positions;
     mapping(uint256 => CuratorRecord) internal _records;
-    mapping(uint256 => uint256) internal _supply;
     mapping(uint256 => uint40) internal _lastEpisode;
     mapping(uint256 => Ticket) internal _tickets;
     mapping(uint256 => Bucket[EXIT_BUCKETS]) internal _buckets;
@@ -243,15 +260,14 @@ contract BallastVaults is ERC6909, IUnlockCallback, IBallastVaults {
         address receiver
     ) external nonReentrant returns (uint128 amount0, uint128 amount1) {
         hook.enterVaultOp();
-        VaultData storage vd = _vault(vaultId);
-        if (msg.sender != vd.curator) revert NotCurator(msg.sender);
-        if (_supply[vaultId] != 0) revert VaultAlreadySeeded();
+        VaultData storage vd = _curatorVault(vaultId);
+        if (_supplyOf(vaultId) != 0) revert VaultAlreadySeeded();
         if (liquidities.length != vd.positionCount) revert InvalidLiquidities();
         if (receiver == address(0)) revert InvalidReceiver();
         StressInfo memory e = _requireCalm();
         OpCtx memory c = _ctx(OP_SEED, vaultId, e);
         c.receiver = receiver;
-        c.extra = abi.encode(liquidities, amount0Max, amount1Max);
+        c.extra = abi.encode(liquidities, uint128(INITIAL_SHARES - MINIMUM_SHARES), amount0Max, amount1Max);
         return _run(c);
     }
 
@@ -267,13 +283,13 @@ contract BallastVaults is ERC6909, IUnlockCallback, IBallastVaults {
     ) external nonReentrant returns (uint128 amount0, uint128 amount1) {
         hook.enterVaultOp();
         _vault(vaultId);
-        if (_supply[vaultId] == 0) revert VaultNotSeeded();
+        _requireSeeded(vaultId);
         if (shares == 0) revert ZeroShares();
         if (receiver == address(0)) revert InvalidReceiver();
         StressInfo memory e = _requireCalm();
         OpCtx memory c = _ctx(OP_DEPOSIT, vaultId, e);
         c.receiver = receiver;
-        c.extra = abi.encode(shares, amount0Max, amount1Max);
+        c.extra = abi.encode(new uint128[](0), shares, amount0Max, amount1Max);
         return _run(c);
     }
 
@@ -286,12 +302,10 @@ contract BallastVaults is ERC6909, IUnlockCallback, IBallastVaults {
     {
         _vault(vaultId);
         if (shares == 0) revert ZeroShares();
-        if (balanceOf[msg.sender][vaultId] < shares) revert SharesExceedBalance();
-        // Escrow is a plain move of shares to the hook's own balance; supply is unchanged, so escrowed shares keep
-        // earning and bearing risk (R-VLT-7). The former owner can no longer transfer them.
-        balanceOf[msg.sender][vaultId] -= shares;
-        balanceOf[address(this)][vaultId] += shares;
-        emit Transfer(msg.sender, msg.sender, address(this), vaultId, shares);
+        if (shareToken.balanceOf(msg.sender, vaultId) < shares) revert SharesExceedBalance();
+        // Escrow is a plain move of shares to this contract's own balance; supply is unchanged, so escrowed shares
+        // keep earning and bearing risk (R-VLT-7). The former owner can no longer transfer them.
+        shareToken.move(msg.sender, address(this), vaultId, shares);
         uint40 maturity = _now() + _exitNotice;
         uint40 epoch = maturity / _bucketWidth();
         ticketId = ++_ticketCount;
@@ -310,9 +324,7 @@ contract BallastVaults is ERC6909, IUnlockCallback, IBallastVaults {
         if (msg.sender != t.owner) revert NotTicketOwnerOrOperator();
         delete _tickets[ticketId];
         _bucketRemove(t.vaultId, t.bucketEpoch, t.shares);
-        balanceOf[address(this)][t.vaultId] -= t.shares;
-        balanceOf[t.owner][t.vaultId] += t.shares;
-        emit Transfer(msg.sender, address(this), t.owner, t.vaultId, t.shares);
+        shareToken.move(address(this), t.owner, t.vaultId, t.shares);
         emit RedeemCancelled(ticketId);
     }
 
@@ -327,7 +339,7 @@ contract BallastVaults is ERC6909, IUnlockCallback, IBallastVaults {
         hook.enterVaultOp();
         Ticket memory t = _tickets[ticketId];
         if (t.owner == address(0)) revert UnknownTicket(ticketId);
-        if (msg.sender != t.owner && !isOperator[t.owner][msg.sender]) {
+        if (msg.sender != t.owner && !shareToken.isOperator(t.owner, msg.sender)) {
             revert NotTicketOwnerOrOperator();
         }
         if (receiver == address(0)) revert InvalidReceiver();
@@ -350,9 +362,8 @@ contract BallastVaults is ERC6909, IUnlockCallback, IBallastVaults {
         nonReentrant
     {
         hook.enterVaultOp();
-        VaultData storage vd = _vault(vaultId);
-        if (msg.sender != vd.curator) revert NotCurator(msg.sender);
-        if (_supply[vaultId] == 0) revert VaultNotSeeded();
+        VaultData storage vd = _curatorVault(vaultId);
+        _requireSeeded(vaultId);
         if (liquidities.length != newRanges.length) revert InvalidLiquidities();
         _validateRanges(newRanges);
         StressInfo memory e = _requireCalm();
@@ -368,13 +379,12 @@ contract BallastVaults is ERC6909, IUnlockCallback, IBallastVaults {
         nonReentrant
     {
         hook.enterVaultOp();
-        VaultData storage vd = _vault(vaultId);
-        if (msg.sender != vd.curator) revert NotCurator(msg.sender);
-        if (_supply[vaultId] == 0) revert VaultNotSeeded();
+        VaultData storage vd = _curatorVault(vaultId);
+        _requireSeeded(vaultId);
         if (liquidity == 0) revert InvalidLiquidities();
         Range[] memory one = new Range[](1);
         one[0] = range;
-        _validateRangesMem(one);
+        _validateRanges(one);
         OpCtx memory c = _ctx(OP_DEPLOY, vaultId, _evalFull());
         c.extra = abi.encode(range, liquidity);
         _run(c);
@@ -383,12 +393,11 @@ contract BallastVaults is ERC6909, IUnlockCallback, IBallastVaults {
     /// @inheritdoc IBallastVaults
     /// @custom:requirement R-VLT-12 R-SBY-5
     function setCommitment(uint256 vaultId, uint128 newCommitment) external nonReentrant {
-        VaultData storage vd = _vault(vaultId);
-        if (msg.sender != vd.curator) revert NotCurator(msg.sender);
+        VaultData storage vd = _curatorVault(vaultId);
         StressInfo memory e = _evalFull();
-        if (_supply[vaultId] != 0) {
+        if (_supplyOf(vaultId) != 0) {
             // Accrue at the old commitment before it changes, without unlocking (no shares or liquidity move).
-            Env memory env = _liveEnv(e);
+            Env memory env = _env(_ctx(OP_CHECKPOINT, vaultId, e));
             _measure(vaultId, env);
             _accrue(vaultId, env, type(uint128).max);
         }
@@ -396,9 +405,6 @@ contract BallastVaults is ERC6909, IUnlockCallback, IBallastVaults {
             vd.commitment = newCommitment;
             vd.pendingCommitment = 0;
             vd.pendingCommitmentAt = 0;
-            emit CommitmentChanged(vaultId, newCommitment, false, _now());
-        } else if (_exitNotice == 0) {
-            vd.commitment = newCommitment;
             emit CommitmentChanged(vaultId, newCommitment, false, _now());
         } else {
             vd.pendingCommitment = newCommitment;
@@ -414,8 +420,7 @@ contract BallastVaults is ERC6909, IUnlockCallback, IBallastVaults {
         nonReentrant
         returns (uint128 amount0, uint128 amount1)
     {
-        VaultData storage vd = _vault(vaultId);
-        if (msg.sender != vd.curator) revert NotCurator(msg.sender);
+        VaultData storage vd = _curatorVault(vaultId);
         if (to == address(0)) revert InvalidReceiver();
         OpCtx memory c;
         c.op = OP_CLAIM_FEES;
@@ -430,33 +435,8 @@ contract BallastVaults is ERC6909, IUnlockCallback, IBallastVaults {
     /// @custom:requirement R-SBY-3 R-FEE-1
     function checkpoint(uint256 vaultId) external nonReentrant {
         _vault(vaultId);
-        if (_supply[vaultId] == 0) revert VaultNotSeeded();
+        _requireSeeded(vaultId);
         _run(_ctx(OP_CHECKPOINT, vaultId, _evalFull()));
-    }
-
-    /// @inheritdoc IBallastVaults
-    /// @dev The first call that observes lost coverage starts the grace clock and returns without flagging; a call
-    /// after `rerangeGrace` flags (R-COV-1, R-COV-2).
-    /// @custom:requirement R-COV-1 R-COV-2 R-COV-4
-    function flagBreach(uint256 vaultId) external nonReentrant {
-        VaultData storage vd = _vault(vaultId);
-        StressInfo memory e = _evalFull();
-        if (e.state != LockState.CALM) revert NotCalm();
-        Env memory env = _liveEnv(e);
-        _measure(vaultId, env);
-        if (_supply[vaultId] == 0 || env.committed >= vd.commitment) revert VaultNotInBreach();
-        if (vd.breachSince != 0) revert AlreadyInBreach();
-        uint40 since = vd.coverageLostSince;
-        uint40 nowTs = _now();
-        if (since == 0) {
-            vd.coverageLostSince = nowTs;
-            emit CoverageLost(vaultId, nowTs + _rerangeGrace);
-            return;
-        }
-        if (nowTs < since + _rerangeGrace) revert GraceNotExpired(since + _rerangeGrace);
-        vd.breachSince = nowTs;
-        ++_records[vaultId].breachCount;
-        emit BreachFlagged(vaultId, env.committed, vd.commitment);
     }
 
     // ─── Unlock callback ───
@@ -476,8 +456,7 @@ contract BallastVaults is ERC6909, IUnlockCallback, IBallastVaults {
     }
 
     function _dispatch(OpCtx memory c) internal returns (uint128, uint128) {
-        if (c.op == OP_SEED) return _opSeed(c);
-        if (c.op == OP_DEPOSIT) return _opDeposit(c);
+        if (c.op == OP_SEED || c.op == OP_DEPOSIT) return _opAdd(c);
         if (c.op == OP_REDEEM) return _opRedeem(c);
         if (c.op == OP_RERANGE) return _opRerange(c);
         if (c.op == OP_DEPLOY) return _opDeploy(c);
@@ -491,50 +470,21 @@ contract BallastVaults is ERC6909, IUnlockCallback, IBallastVaults {
 
     // ─── Operations (run inside the unlock) ───
 
-    function _opSeed(OpCtx memory c) internal returns (uint128, uint128) {
-        (uint128[] memory liqs, uint128 max0, uint128 max1) =
-            abi.decode(c.extra, (uint128[], uint128, uint128));
-        Env memory env = _env(c);
-        Position[] storage ps = _positions[c.v];
-        uint256 o0;
-        uint256 o1;
-        bool any;
-        for (uint256 i; i < liqs.length; ++i) {
-            if (liqs[i] == 0) continue;
-            any = true;
-            (int128 a0, int128 a1) =
-                _modify(c.v, i, ps[i].tickLower, ps[i].tickUpper, int256(uint256(liqs[i])), env);
-            ps[i].liquidity = liqs[i];
-            o0 += _neg(a0);
-            o1 += _neg(a1);
-        }
-        if (!any) revert InvalidLiquidities();
-        if (o0 > max0 || o1 > max1) revert SlippageExceeded();
-        _settleIn(_c0(), c.caller, o0);
-        _settleIn(_c1(), c.caller, o1);
-        _mint(c.receiver, c.v, INITIAL_SHARES - MINIMUM_SHARES);
-        _mint(address(0), c.v, MINIMUM_SHARES);
-        _measure(c.v, env);
-        VaultData storage vd = _vaults[c.v];
-        vd.lastCheckpoint = _now();
-        vd.lastDepthSample = env.sample;
-        _updateCoverage(c.v, env);
-        emit Seeded(c.v, c.receiver, INITIAL_SHARES - MINIMUM_SHARES, _u128(o0), _u128(o1));
-        return (_u128(o0), _u128(o1));
-    }
-
-    function _opDeposit(OpCtx memory c) internal returns (uint128, uint128) {
-        (uint128 shares, uint128 max0, uint128 max1) =
-            abi.decode(c.extra, (uint128, uint128, uint128));
-        Env memory env = _prepare(c);
-        uint256 supply = _supply[c.v];
+    /// @dev Seed and deposit share one body (ADR-050): a seed supplies per-position liquidity and mints the initial
+    /// shares; a deposit scales every position and the idle slices by `shares / supply`, rounding up (R-VLT-3, INV-5).
+    function _opAdd(OpCtx memory c) internal returns (uint128, uint128) {
+        bool seeding = c.op == OP_SEED;
+        (uint128[] memory liqs, uint128 shares, uint128 max0, uint128 max1) =
+            abi.decode(c.extra, (uint128[], uint128, uint128, uint128));
+        Env memory env = seeding ? _env(c) : _prepare(c);
+        uint256 supply = seeding ? 0 : _supplyOf(c.v);
         Position[] storage ps = _positions[c.v];
         uint256 p0;
         uint256 p1;
         for (uint256 i; i < ps.length; ++i) {
-            if (ps[i].liquidity == 0) continue;
-            // Rounds up: the depositor funds at least a proportional slice (R-VLT-3, INV-5).
-            uint128 dl = _u128(VaultMath.ceilShare(ps[i].liquidity, shares, supply));
+            uint128 dl =
+                seeding ? liqs[i] : _u128(VaultMath.ceilShare(ps[i].liquidity, shares, supply));
+            if (dl == 0) continue;
             (int128 a0, int128 a1) =
                 _modify(c.v, i, ps[i].tickLower, ps[i].tickUpper, int256(uint256(dl)), env);
             ps[i].liquidity += dl;
@@ -542,30 +492,47 @@ contract BallastVaults is ERC6909, IUnlockCallback, IBallastVaults {
             p1 += _neg(a1);
         }
         VaultData storage vd = _vaults[c.v];
-        uint256 s0 = VaultMath.ceilShare(vd.idle0, shares, supply);
-        uint256 s1 = VaultMath.ceilShare(vd.idle1, shares, supply);
-        vd.idle0 += _u128(s0);
-        vd.idle1 += _u128(s1);
-        p0 += s0;
-        p1 += s1;
+        uint256 s0;
+        uint256 s1;
+        if (seeding) {
+            if (p0 == 0 && p1 == 0) revert InvalidLiquidities();
+        } else {
+            s0 = VaultMath.ceilShare(vd.idle0, shares, supply);
+            s1 = VaultMath.ceilShare(vd.idle1, shares, supply);
+            vd.idle0 += _u128(s0);
+            vd.idle1 += _u128(s1);
+            p0 += s0;
+            p1 += s1;
+        }
         if (p0 > max0 || p1 > max1) revert SlippageExceeded();
         _settleIn(_c0(), c.caller, p0);
         _settleIn(_c1(), c.caller, p1);
         _toClaims(_c0(), s0);
         _toClaims(_c1(), s1);
         _flush(c.v, env);
-        _mint(c.receiver, c.v, shares);
-        // Scaled sample: after the deposit the depth is at least proportional (ceil), so scaling down is conservative.
-        vd.lastDepthSample =
-            _u128(FixedPointMathLib.fullMulDiv(env.sample, supply + shares, supply));
-        emit Deposited(c.v, c.caller, c.receiver, shares, _u128(p0), _u128(p1));
+        if (seeding) {
+            shares = uint128(INITIAL_SHARES - MINIMUM_SHARES);
+            shareToken.mint(address(0), c.v, MINIMUM_SHARES);
+            _measure(c.v, env);
+            vd.lastCheckpoint = _now();
+            vd.lastDepthSample = env.sample;
+            _updateCoverage(c.v, env);
+            emit Seeded(c.v, c.receiver, shares, _u128(p0), _u128(p1));
+        } else {
+            // Scaled sample: after the deposit the depth is at least proportional (ceil), so scaling down is
+            // conservative.
+            vd.lastDepthSample =
+                _u128(FixedPointMathLib.fullMulDiv(env.sample, supply + shares, supply));
+            emit Deposited(c.v, c.caller, c.receiver, shares, _u128(p0), _u128(p1));
+        }
+        shareToken.mint(c.receiver, c.v, shares);
         return (_u128(p0), _u128(p1));
     }
 
     function _opRedeem(OpCtx memory c) internal returns (uint128, uint128) {
         Ticket memory t = _tickets[c.a];
         Env memory env = _prepare(c);
-        uint256 supply = _supply[c.v];
+        uint256 supply = _supplyOf(c.v);
         Position[] storage ps = _positions[c.v];
         uint256 r0;
         uint256 r1;
@@ -590,7 +557,7 @@ contract BallastVaults is ERC6909, IUnlockCallback, IBallastVaults {
         _flush(c.v, env);
         delete _tickets[c.a];
         _bucketRemove(c.v, t.bucketEpoch, t.shares);
-        _burn(address(this), c.v, t.shares);
+        shareToken.burn(address(this), c.v, t.shares);
         vd.lastDepthSample =
             _u128(FixedPointMathLib.fullMulDiv(env.sample, supply - t.shares, supply));
         _takeOut(_c0(), c.receiver, r0 + s0);
@@ -744,30 +711,14 @@ contract BallastVaults is ERC6909, IUnlockCallback, IBallastVaults {
         returns (int128, int128)
     {
         Position storage p = _positions[v][slot];
-        uint256 unit = _amountPerWadLiquidity(p, env.sqrtP, token0);
-        if (unit == 0) revert InsufficientIdle();
-        uint256 dl = FixedPointMathLib.fullMulDivUp(shortfall, 1e18, unit) + 1;
-        if (dl >= p.liquidity) revert InsufficientIdle();
-        // SAFETY: dl < p.liquidity <= 2^128.
+        uint256 dl = depthCalc.shrinkLiquidity(
+            p.tickLower, p.tickUpper, p.liquidity, env.sqrtP, shortfall, token0
+        );
+        if (dl == 0) revert InsufficientIdle();
+        // SAFETY: `shrinkLiquidity` returns dl < p.liquidity <= 2^128.
         // forge-lint: disable-next-line(unsafe-typecast)
         p.liquidity -= uint128(dl);
         return _modify(v, slot, p.tickLower, p.tickUpper, -int256(dl), env);
-    }
-
-    /// @dev Amount of `currency` (0 or 1) that 1e18 liquidity of `p` represents at the current price, rounded down.
-    function _amountPerWadLiquidity(Position storage p, uint160 sqrtP, bool token0)
-        internal
-        view
-        returns (uint256)
-    {
-        uint160 lo = TickMath.getSqrtPriceAtTick(p.tickLower);
-        uint160 hi = TickMath.getSqrtPriceAtTick(p.tickUpper);
-        if (token0) {
-            if (sqrtP >= hi) return 0;
-            return SqrtPriceMath.getAmount0Delta(sqrtP > lo ? sqrtP : lo, hi, 1e18, false);
-        }
-        if (sqrtP <= lo) return 0;
-        return SqrtPriceMath.getAmount1Delta(lo, sqrtP < hi ? sqrtP : hi, 1e18, false);
     }
 
     /// @dev Settles the net balance of one currency against the vault's idle claims.
@@ -793,6 +744,20 @@ contract BallastVaults is ERC6909, IUnlockCallback, IBallastVaults {
         if (vd.curator == address(0)) revert UnknownVault(vaultId);
     }
 
+    /// @dev The vault, reverting unless it exists and the caller is its curator.
+    function _curatorVault(uint256 vaultId) internal view returns (VaultData storage vd) {
+        vd = _vault(vaultId);
+        if (msg.sender != vd.curator) revert NotCurator(msg.sender);
+    }
+
+    function _requireSeeded(uint256 vaultId) private view {
+        if (_supplyOf(vaultId) == 0) revert VaultNotSeeded();
+    }
+
+    function _supplyOf(uint256 vaultId) internal view returns (uint256) {
+        return shareToken.totalSupply(vaultId);
+    }
+
     function _c0() internal view returns (Currency) {
         return _collateralIs0 ? _collateral : _quote;
     }
@@ -807,24 +772,39 @@ contract BallastVaults is ERC6909, IUnlockCallback, IBallastVaults {
             currency1: _c1(),
             fee: _fee,
             tickSpacing: _tickSpacing,
-            hooks: IHooks(address(this))
+            hooks: IHooks(address(hook))
         });
     }
 
+    uint8 private constant CASH_SETTLE_IN = 0;
+    uint8 private constant CASH_TAKE_OUT = 1;
+    uint8 private constant CASH_TO_CLAIMS = 2;
+    uint8 private constant CASH_FROM_CLAIMS = 3;
+
+    /// @dev The single settlement routine (one copy of the `CurrencySettler` calls keeps the runtime small, ADR-046).
+    /// Zero amounts are skipped. `who` is the payer for `CASH_SETTLE_IN` and the receiver for `CASH_TAKE_OUT`.
+    function _cash(uint8 mode, Currency cur, address who, uint256 amount) private {
+        if (amount == 0) return;
+        if (mode == CASH_SETTLE_IN) cur.settle(poolManager, who, amount, false);
+        else if (mode == CASH_TAKE_OUT) cur.take(poolManager, who, amount, false);
+        else if (mode == CASH_TO_CLAIMS) cur.take(poolManager, address(this), amount, true);
+        else cur.settle(poolManager, address(this), amount, true);
+    }
+
     function _settleIn(Currency cur, address payer, uint256 amount) internal {
-        cur.settle(poolManager, payer, amount, false);
+        _cash(CASH_SETTLE_IN, cur, payer, amount);
     }
 
     function _takeOut(Currency cur, address to, uint256 amount) internal {
-        cur.take(poolManager, to, amount, false);
+        _cash(CASH_TAKE_OUT, cur, to, amount);
     }
 
     function _toClaims(Currency cur, uint256 amount) internal {
-        cur.take(poolManager, address(this), amount, true);
+        _cash(CASH_TO_CLAIMS, cur, address(0), amount);
     }
 
     function _fromClaims(Currency cur, uint256 amount) internal {
-        cur.settle(poolManager, address(this), amount, true);
+        _cash(CASH_FROM_CLAIMS, cur, address(0), amount);
     }
 
     function _u128(uint256 x) internal pure returns (uint128) {
@@ -858,14 +838,6 @@ contract BallastVaults is ERC6909, IUnlockCallback, IBallastVaults {
         env.anchor = c.anchor;
         env.calm = c.calm;
         env.episode = c.episode;
-    }
-
-    function _liveEnv(StressInfo memory e) internal view returns (Env memory env) {
-        // slither-disable-next-line unused-return
-        (env.sqrtP, env.tick,,) = poolManager.getSlot0(_poolId);
-        env.anchor = e.anchorTick;
-        env.calm = e.state == LockState.CALM;
-        env.episode = e.stressStartedAt;
     }
 
     /// @dev Evaluates stress through the hook (full TWAP lookups, R-STR-7b).
@@ -945,23 +917,12 @@ contract BallastVaults is ERC6909, IUnlockCallback, IBallastVaults {
         emit FeesCrystallized(v, _u128(f0), _u128(f1));
     }
 
-    /// @dev Committed depth `D_v` (anchor band) and the standby depth sample `min(D_v, live)` (ADR-025).
+    /// @dev Committed depth `D_v` (anchor band) and the standby depth sample `min(D_v, live)` (ADR-025), computed by
+    /// the stateless `BallastDepth` (ADR-050).
     function _measure(uint256 v, Env memory env) internal view {
-        Position[] storage ps = _positions[v];
-        (int24 near, int24 far) = BandMath.bandEdges(env.anchor, _collateralIs0, _bandTicks);
-        // slither-disable-next-line unused-return
-        (, int24 farSpot) = BandMath.bandEdges(env.tick, _collateralIs0, _bandTicks);
-        uint256 d;
-        uint256 l;
-        for (uint256 i; i < ps.length; ++i) {
-            Position memory p = ps[i];
-            d += DepthMath.absorbable(
-                _collateralIs0, p.tickLower, p.tickUpper, p.liquidity, near, far
-            );
-            l += DepthMath.liveAbsorbable(
-                _collateralIs0, p.tickLower, p.tickUpper, p.liquidity, env.sqrtP, farSpot
-            );
-        }
+        (uint256 d, uint256 l) = depthCalc.measure(
+            _collateralIs0, env.anchor, env.tick, env.sqrtP, _bandTicks, _positions[v]
+        );
         env.committed = _sat(d);
         env.sample = _sat(d < l ? d : l);
     }
@@ -1022,14 +983,17 @@ contract BallastVaults is ERC6909, IUnlockCallback, IBallastVaults {
         emit RewardCredited(v, _u128(toIdle), _u128(toCurator));
     }
 
-    /// @dev Coverage bookkeeping. In CALM, coverage clears a breach (R-COV-3) or starts the grace clock; outside CALM
-    /// coverage is not enforced (R-COV-4) and the clock is reset so the curator gets a full grace after calm returns.
+    /// @dev Coverage bookkeeping. In CALM, coverage clears a breach (R-COV-3) or starts the grace clock, and the first
+    /// checkpoint after `rerangeGrace` flags the breach (R-COV-1, R-COV-2; ADR-052: there is no separate flag call).
+    /// Outside CALM coverage is not enforced (R-COV-4) and the clock is reset so the curator gets a full grace after
+    /// calm returns.
     function _updateCoverage(uint256 v, Env memory env) internal {
         VaultData storage vd = _vaults[v];
         if (!env.calm) {
             vd.coverageLostSince = 0;
             return;
         }
+        uint40 nowTs = _now();
         if (env.committed >= vd.commitment) {
             if (vd.breachSince != 0) {
                 vd.breachSince = 0;
@@ -1037,22 +1001,18 @@ contract BallastVaults is ERC6909, IUnlockCallback, IBallastVaults {
             }
             vd.coverageLostSince = 0;
         } else if (vd.coverageLostSince == 0) {
-            vd.coverageLostSince = _now();
-            emit CoverageLost(v, _now() + _rerangeGrace);
+            vd.coverageLostSince = nowTs;
+            emit CoverageLost(v, nowTs + _rerangeGrace);
+        } else if (vd.breachSince == 0 && nowTs >= vd.coverageLostSince + _rerangeGrace) {
+            vd.breachSince = nowTs;
+            ++_records[v].breachCount;
+            emit BreachFlagged(v, env.committed, vd.commitment);
         }
     }
 
     // ─── Range validation ───
 
-    function _validateRanges(Range[] calldata ranges) internal view {
-        Range[] memory m = new Range[](ranges.length);
-        for (uint256 i; i < ranges.length; ++i) {
-            m[i] = ranges[i];
-        }
-        _validateRangesMem(m);
-    }
-
-    function _validateRangesMem(Range[] memory ranges) internal view {
+    function _validateRanges(Range[] memory ranges) internal view {
         if (ranges.length == 0 || ranges.length > MAX_POSITIONS) revert TooManyPositions();
         for (uint256 i; i < ranges.length; ++i) {
             int24 lo = ranges[i].tickLower;
@@ -1094,83 +1054,17 @@ contract BallastVaults is ERC6909, IUnlockCallback, IBallastVaults {
         else _maturedEscrow[v] -= shares;
     }
 
-    /// @inheritdoc IBallastVaults
-    /// @dev Counts ticket shares whose effective exit time `max(maturity, earliestRelease)` is within `horizon`
-    /// (ADR-047). Bucket starts round maturity down, so the count is never below the exact figure (ADR-048).
-    function exitingShares(uint256 vaultId, uint32 horizon) external view returns (uint256 shares) {
-        uint256 limit = uint256(_now()) + horizon;
-        if (hook.stressInfo().earliestRelease > limit) return 0;
-        shares = _maturedEscrow[vaultId];
-        uint256 w = _bucketWidth();
-        for (uint256 i; i < EXIT_BUCKETS; ++i) {
-            Bucket storage b = _buckets[vaultId][i];
-            if (b.shares != 0 && uint256(b.epoch) * w <= limit) shares += b.shares;
+    // ─── Storage reads for the lens (ADR-050) ───
+
+    /// @notice Reads `n` consecutive raw storage slots starting at `slot`. The only read-only primitive besides the
+    /// public immutables; the lens decodes vault state with it (layout: docs/storage-layout.md).
+    /// @dev Inline assembly: `sload` has no Solidity equivalent. It can only read this contract's own storage.
+    function extsload(bytes32 slot, uint256 n) external view returns (bytes32[] memory out) {
+        out = new bytes32[](n);
+        assembly ("memory-safe") {
+            for { let i := 0 } lt(i, n) { i := add(i, 1) } {
+                mstore(add(add(out, 0x20), shl(5, i)), sload(add(slot, i)))
+            }
         }
     }
-
-    // ─── Shares ledger ───
-
-    /// @inheritdoc IBallastVaults
-    function totalSupply(uint256 vaultId) external view returns (uint256) {
-        return _supply[vaultId];
-    }
-
-    function _mint(address receiver, uint256 id, uint256 amount) internal override {
-        _supply[id] += amount;
-        super._mint(receiver, id, amount);
-    }
-
-    function _burn(address sender, uint256 id, uint256 amount) internal override {
-        _supply[id] -= amount;
-        super._burn(sender, id, amount);
-    }
-
-    // ─── Vault views ───
-
-    /// @inheritdoc IBallastVaults
-    function vaultCount() external view returns (uint256) {
-        return _vaultCount;
-    }
-
-    /// @inheritdoc IBallastVaults
-    function vault(uint256 vaultId) external view returns (VaultView memory v) {
-        VaultData storage d = _vault(vaultId);
-        v = VaultView({
-            curator: d.curator,
-            curatorFeeBps: d.curatorFeeBps,
-            commitment: d.commitment,
-            pendingCommitment: d.pendingCommitment,
-            pendingCommitmentAt: d.pendingCommitmentAt,
-            totalShares: _u128(_supply[vaultId]),
-            idle0: d.idle0,
-            idle1: d.idle1,
-            curatorOwed0: d.owed0,
-            curatorOwed1: d.owed1,
-            lastCheckpoint: d.lastCheckpoint,
-            breachSince: d.breachSince,
-            positionCount: d.positionCount
-        });
-    }
-
-    /// @inheritdoc IBallastVaults
-    function positionsOf(uint256 vaultId) external view returns (PositionView[] memory out) {
-        _vault(vaultId);
-        Position[] storage ps = _positions[vaultId];
-        out = new PositionView[](ps.length);
-        for (uint256 i; i < ps.length; ++i) {
-            out[i] = PositionView(ps[i].tickLower, ps[i].tickUpper, ps[i].liquidity);
-        }
-    }
-
-    /// @inheritdoc IBallastVaults
-    function ticket(uint256 ticketId) external view returns (TicketView memory) {
-        Ticket memory t = _tickets[ticketId];
-        return TicketView(t.vaultId, t.owner, t.shares, t.maturity);
-    }
-
-    /// @inheritdoc IBallastVaults
-    function record(uint256 vaultId) external view returns (CuratorRecord memory) {
-        return _records[vaultId];
-    }
-
 }

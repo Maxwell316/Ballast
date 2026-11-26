@@ -7,7 +7,7 @@ import {StressInfo} from "../types/Types.sol";
 /// @title IBallastHook
 /// @notice Hook-side surface used by the vaults (ADR-045). The hook calls nothing on the vaults after construction.
 interface IBallastHook is IBallastPool {
-    /// @notice The `BallastVaults` contract this hook created; the only address admitted by the liquidity gate (G-1).
+    /// @notice The `BallastVaults` contract bound immutably at deployment; the only address admitted by the liquidity gate (G-1).
     function vaults() external view returns (address);
 
     /// @notice Vaults only. Reverts if the transaction already swapped, then sets the `VAULT_OP` flag (R-TX-2).

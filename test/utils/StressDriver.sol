@@ -26,7 +26,7 @@ abstract contract StressDriver is HookFixture {
 
     /// @dev One oracle step: advance `dt` seconds and make a tiny swap (which evaluates stress once per interval).
     function _step(uint256 dt) internal {
-        vm.warp(block.timestamp + dt);
+        vm.warp(vm.getBlockTimestamp() + dt);
         _swap(false, TINY); // buy collateral: negligible price effect either way
     }
 
