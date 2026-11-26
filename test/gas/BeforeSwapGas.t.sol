@@ -9,7 +9,7 @@ import {ConfigFixture} from "../utils/ConfigFixture.sol";
 contract BeforeSwapGasTest is HookFixture {
     function setUp() public {
         _setUpDefault(true, ConfigFixture.prodLike(), 0);
-        hook.modifyForTest(-6000, 6000, 1e18, bytes32(uint256(1)));
+        _provide(-6000, 6000, 1e18);
     }
 
     function _measure() internal returns (uint256) {
@@ -26,31 +26,31 @@ contract BeforeSwapGasTest is HookFixture {
 
     function test_Gas_UpdateOnly_NoSnapshot() public {
         _swap(true, 1e12);
-        vm.warp(block.timestamp + 10);
+        vm.warp(vm.getBlockTimestamp() + 10);
         emit log_named_uint("beforeSwap: update only (no snapshot)", _measure());
     }
 
     function test_Gas_Snapshot_Cold() public {
         _swap(true, 1e12);
-        vm.warp(block.timestamp + 61);
+        vm.warp(vm.getBlockTimestamp() + 61);
         emit log_named_uint("beforeSwap: update+snapshot+eval (cold oracle)", _measure());
     }
 
     function test_Gas_Snapshot_WarmEval() public {
         for (uint256 i; i < 1500; ++i) {
-            vm.warp(block.timestamp + 60);
+            vm.warp(vm.getBlockTimestamp() + 60);
             _swap(i % 2 == 0, 1e12);
         }
-        vm.warp(block.timestamp + 61);
+        vm.warp(vm.getBlockTimestamp() + 61);
         emit log_named_uint("beforeSwap: update+snapshot+eval (warm, ring filling)", _measure());
     }
 
     function test_Gas_Snapshot_WarmEval_AfterWrap() public {
         for (uint256 i; i < 1700; ++i) {
-            vm.warp(block.timestamp + 60);
+            vm.warp(vm.getBlockTimestamp() + 60);
             _swap(i % 2 == 0, 1e12);
         }
-        vm.warp(block.timestamp + 61);
+        vm.warp(vm.getBlockTimestamp() + 61);
         emit log_named_uint("beforeSwap: update+snapshot+eval (warm, wrapped ring)", _measure());
     }
 }

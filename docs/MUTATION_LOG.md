@@ -132,3 +132,9 @@ Cursors (12 mutations, `ObservationsCursor.t.sol`): caught: stale-slot check rem
 
 A test finding, not a code finding: while re-running, `testFuzz_RealSwapHistory_MatchesNaiveModel` produced "TWAP error 4 > bound 2". The oracle was right and the test wrong: it measured the tick swing over the TWAP window, but the bound of MATH §4 is over the bracket of snapshots around the window start, which can be hours long and begin before the window. The test now finds the true bracket; 3,000 fuzz runs pass.
 
+
+## Split custody: liquidity gate (2026-11-26)
+Scratch mutations of `BallastHook._beforeAddLiquidity` / `_beforeRemoveLiquidity`, run against `LiquidityGateTest` and `HookCallbacksTest`, then reverted:
+- **`sender != vaults` changed to `sender == vaults`** (both callbacks): caught by 5 tests (the vaults' own `seed` in `setUp` reverts, plus the plain-router add test no longer sees a revert).
+- **The `sender` check removed** (both callbacks): caught by 4 tests (`test_RevertWhen_ExternalAddLiquidity_PlainRouter`, `test_RevertWhen_ExternalRemoveLiquidity_PlainRouter`, `test_RevertWhen_ArbitraryUnlockContract_Adds`, `test_RevertWhen_ArbitraryUnlockContract_RemovesOrPokes`).
+The real PositionManager and the deployed routers are covered by `test/fork/HookOnlyLiquidityFork.t.sol` (run against a fork of chain 1301, block 68,788,256: 5 tests pass).

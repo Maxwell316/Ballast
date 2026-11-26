@@ -52,7 +52,7 @@ test/
 Handler-based. Actors: three curators, five depositors, one sponsor, one trader, one time-warper.
 
 Handler actions (each bounded and guarded to avoid trivially reverting calls):
-`createVault`, `seed` (curator), `deposit`, `requestRedeem`, `cancelRedeem`, `claimRedeem` (owner and operator, arbitrary receiver), `rerange` (calm), `deployIdle`, `setCommitment`, `checkpoint`, `flagBreach`, `pokeStress`, `fundStandby`, `setStandbyRate`, `swapCollateralIn`, `swapQuoteIn` (various sizes), `warp`.
+`createVault`, `seed` (curator), `deposit`, `requestRedeem`, `cancelRedeem`, `claimRedeem` (owner and operator, arbitrary receiver), `rerange` (calm), `deployIdle`, `setCommitment`, `checkpoint`, `pokeStress`, `fundStandby`, `setStandbyRate`, `swapCollateralIn`, `swapQuoteIn` (various sizes), `warp`.
 
 Ghost variables: total deposited and withdrawn per currency, total credited rewards, total funded, per-vault shares, number of lock violations (must stay zero), observed state transitions.
 
@@ -185,3 +185,14 @@ Searched `src/` and `test/` for memory-struct assignments and storage-to-memory 
 ## 9. CI pipeline
 
 `.github/workflows/ci.yml` runs: checkout with submodules, install Foundry, `forge fmt --check`, `forge build --sizes`, `forge test` (CI profile), `forge coverage` with threshold check, Slither, and compliance-matrix generation. Fork tests run on a schedule or manual dispatch if an RPC secret exists.
+
+## 10. G-1 and split-architecture tests (ADR-045, ADR-050)
+
+- **G-1 (local):** `unit/hook/LiquidityGate` and `unit/hook/HookCallbacks`: plain router add, remove and zero-liquidity poke; an arbitrary contract that unlocks then calls `modifyLiquidity` (add, remove, poke); the hook itself as caller. All revert with `ExternalLiquidityForbidden`.
+- **G-1 (fork of chain 1301, block 68,788,256):** `fork/HookOnlyLiquidityFork`: the real PositionManager (mint into an empty and into an occupied range) and the deployed routers (add, remove, poke) fail; the vaults' own liquidity succeeds and is owned by the vaults (INV-1).
+- **T19:** `LiquidityGateTest` checks the compiled ABI, the runtime selectors for `unlock`/`unlockCallback` (with controls in the vaults' code) and, behaviourally, that every outgoing call of the hook over swaps, a poke and a vault operation is a PoolManager storage read. A literal `modifyLiquidity` scan is not used as proof: the optimizer builds some selector constants arithmetically (ADR-050 note).
+- **Sizes:** `unit/Sizes`: every runtime is at most 23,800 bytes except the vaults (at most 24,300 with at least 250 bytes of margin, ADR-051); every initcode plus its largest constructor arguments is at most 46,152 bytes (the EIP-3860 limit minus 3,000).
+- **Layout:** `unit/lens/LensLayout`: every field the lens decodes through `extsload` equals the vaults' own state after each step of a multi-vault lifecycle.
+- **Gate mutation sanity:** `sender == vaults` changed to `!=`, and the check removed; both fail the G-1 tests (see MUTATION_LOG.md).
+- **Deployment:** `fork/DeployBallastScript` runs the real script on the fork: CREATE2 hook address flags, both binding directions, `VerifyBinding`, pool initialised.
+- **Time in tests:** read time with `vm.getBlockTimestamp()`, never `block.timestamp` (ADR-054).

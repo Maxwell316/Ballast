@@ -16,13 +16,16 @@ import {HookFixture} from "../../utils/HookFixture.sol";
 import {ConfigFixture} from "../../utils/ConfigFixture.sol";
 import {MockERC20} from "../../utils/MockERC20.sol";
 import {BallastHook} from "../../../src/BallastHook.sol";
+import {BallastVaults} from "../../../src/BallastVaults.sol";
+import {IBallastHook} from "../../../src/interfaces/IBallastHook.sol";
+import {BoundDeploy} from "../../utils/BoundDeploy.sol";
 import {HookMiner} from "../../../script/utils/HookMiner.sol";
 import {IBallastErrors} from "../../../src/interfaces/IBallastErrors.sol";
 import {Config, LockState, StressInfo} from "../../../src/types/Types.sol";
 
 /// @notice Pool binding, permissions, hook-only liquidity and deployment on a real local PoolManager.
 /// @custom:requirement R-POOL-1 R-POOL-2 R-POOL-3 R-POOL-4 R-POOL-6 R-LIQ-1 R-LIQ-2 R-LIQ-3 R-LIQ-4
-contract HookCallbacksTest is HookFixture {
+contract HookCallbacksTest is HookFixture, BoundDeploy {
     using StateLibrary for IPoolManager;
 
     function _preInit(bool c0) internal {
@@ -81,10 +84,8 @@ contract HookCallbacksTest is HookFixture {
         Config memory c = ConfigFixture.prodLike();
         c.collateral = Currency.wrap(address(collateral));
         c.quote = Currency.wrap(address(quote));
-        bytes memory args = abi.encode(address(pm), c);
-        (address predicted, bytes32 salt) =
-            HookMiner.find(address(this), FLAGS, type(BallastHook).creationCode, args);
-        BallastHook h = new BallastHook{salt: salt}(pm, c);
+        (address predicted, bytes32 salt, BallastVaults bv) = _mineAndDeployVaults(pm, c);
+        BallastHook h = new BallastHook{salt: salt}(pm, c, address(bv));
         assertEq(address(h), predicted, "predicted address");
         assertEq(uint160(address(h)) & Hooks.ALL_HOOK_MASK, _mask(h.getHookPermissions()), "flags");
     }
@@ -95,8 +96,11 @@ contract HookCallbacksTest is HookFixture {
         Config memory c = ConfigFixture.prodLike();
         c.collateral = Currency.wrap(address(collateral));
         c.quote = Currency.wrap(address(quote));
+        address predictedHook =
+            vm.computeCreateAddress(address(this), vm.getNonce(address(this)) + 1);
+        BallastVaults bv = new BallastVaults(pm, IBallastHook(predictedHook), c);
         vm.expectRevert();
-        new BallastHook(pm, c); // an ordinary CREATE address has (almost surely) the wrong low bits
+        new BallastHook(pm, c, address(bv)); // an ordinary CREATE address has (almost surely) the wrong low bits
     }
 
     // ─── pool binding ───
@@ -121,7 +125,7 @@ contract HookCallbacksTest is HookFixture {
     function test_AfterInitialize_SeedsObservationZeroAtInitialTick() public {
         _preInit(true);
         _initPool(-1200);
-        vm.warp(block.timestamp + 100);
+        vm.warp(vm.getBlockTimestamp() + 100);
         // Pool tick is -1200 for the whole 100 s since initialisation.
         (int24 twap,) = hook.twapTick(100);
         assertEq(twap, -1200);
@@ -275,7 +279,7 @@ contract HookCallbacksTest is HookFixture {
     /// @custom:guarantee G-1
     function test_RevertWhen_ExternalRemoveLiquidity_PlainRouter() public {
         _fullSetUp(true);
-        hook.modifyForTest(-600, 600, 1e18, bytes32(uint256(1)));
+        _provide(-600, 600, 1e18);
         bytes memory expected = _wrapped(
             IHooks.beforeRemoveLiquidity.selector,
             abi.encodeWithSelector(IBallastErrors.ExternalLiquidityForbidden.selector)
@@ -286,26 +290,30 @@ contract HookCallbacksTest is HookFixture {
         liqRouter.modifyLiquidity(key, ModifyLiquidityParams(-600, 600, 0, 0), "");
     }
 
-    /// @notice The hook's own liquidity changes bypass its callbacks (R-LIQ-4) and the position is owned by it
+    /// @notice The vaults contract's liquidity passes the gate and the position is owned by the vaults, not the hook
     /// (R-LIQ-3, INV-1).
     /// @custom:guarantee G-1
-    function test_HookSelfCall_AddsAndRemovesLiquidity_BypassingCallbacks() public {
+    /// @custom:invariant INV-1
+    function test_VaultsAdd_PassesGate_AndOwnsPosition() public {
         _fullSetUp(true);
-        bytes32 salt = bytes32(uint256(1 << 8 | 0));
-        hook.modifyForTest(-600, 600, 5e17, salt);
-        bytes32 posKey = Position.calculatePositionKey(address(hook), -600, 600, salt);
-        assertEq(IPoolManager(address(pm)).getPositionLiquidity(pid, posKey), 5e17, "owned by hook");
-        // The router's own key for the same range holds nothing.
+        uint256 v = _provide(-600, 600, 5e17);
+        bytes32 salt = bytes32(v << 8);
+        bytes32 posKey = Position.calculatePositionKey(address(vaults), -600, 600, salt);
+        assertEq(
+            IPoolManager(address(pm)).getPositionLiquidity(pid, posKey), 5e17, "owned by vaults"
+        );
+        bytes32 hookKey = Position.calculatePositionKey(address(hook), -600, 600, salt);
+        assertEq(
+            IPoolManager(address(pm)).getPositionLiquidity(pid, hookKey), 0, "hook owns nothing"
+        );
         bytes32 routerKey = Position.calculatePositionKey(address(liqRouter), -600, 600, salt);
         assertEq(IPoolManager(address(pm)).getPositionLiquidity(pid, routerKey), 0);
-        hook.modifyForTest(-600, 600, -2e17, salt);
-        assertEq(IPoolManager(address(pm)).getPositionLiquidity(pid, posKey), 3e17);
     }
 
     /// @notice Donations are not restricted (R-LIQ-5): the hook has no donate flag.
     function test_Donate_IsNotRestricted() public {
         _fullSetUp(true);
-        hook.modifyForTest(-600, 600, 1e18, bytes32(uint256(1)));
+        _provide(-600, 600, 1e18);
         PoolDonateTest donor = new PoolDonateTest(pm);
         collateral.approve(address(donor), type(uint256).max);
         quote.approve(address(donor), type(uint256).max);

@@ -256,3 +256,68 @@ The fork test showed that removing liquidity rounds amounts down and adding roun
 | `via_ir` | Not needed so far |
 | Settlement helper | OpenZeppelin `CurrencySettler` (ADR-030) |
 | Five hook flags on chain 1301 | Exercised by `test/fork/HooksOnChain.t.sol` (F-3) |
+
+
+## ADR-045 — Split custody: `BallastHook` and `BallastVaults`
+**Context:** The M3–M7 vault logic written into `BallastHook` produced a runtime of 40.6 KB (`via_ir`) / 46.1 KB (legacy, `optimizer_runs = 1`) against the 24,576-byte limit (M2 hook alone: 13.5 KB). Stubbing each function to a revert showed no single hog, so trimming cannot close the gap.
+**Decision (maintainer-approved):**
+- `BallastHook` keeps the callbacks, the oracle, the stress machine and the liquidity gate. `BallastVaults` owns positions, vault shares (ERC-6909), PoolManager claims and all vault operations. The hook creates the vaults contract in its own constructor (`new BallastVaults(...)`), so the two immutable addresses are not circular and neither contract has an owner, admin, proxy or `delegatecall`.
+- D-2 stands (one hook per pool) and extends to one vaults contract per hook. **D-3 is amended:** one hook plus one custody contract; pure maths stays in internal libraries.
+- **G-1 is reformulated:** only the `BallastVaults` contract, created by the hook in its constructor, can add or remove liquidity in the pool; the hook callbacks enforce this with an explicit sender check (`sender == address(vaults)`). **INV-1:** every position is owned by the vaults contract. The old reliance on the PoolManager's self-call skip is removed (R-LIQ-1, R-LIQ-4, T1). Because the vaults contract is not the hook, the PoolManager *does* call the hook's `beforeAdd/RemoveLiquidity` for it, and the check lets it through.
+- **Acyclic calls.** The hook never calls the vaults after its constructor. The vaults call the hook through two functions only: `enterVaultOp()` (restricted to the vaults address; reverts if `SWAPPED`, sets `VAULT_OP`; the transient flags stay in the hook) and `evaluateStress()` (permissionless; the logic of `pokeStress`, returning the evaluation). The reentrancy guard lives in the vaults; the swap-path guard stays in the hook.
+- The hook does not implement `IUnlockCallback` and contains no call to `modifyLiquidity` or `unlock` (T19). A test inspects the compiled runtime bytecode for the `modifyLiquidity` selector and for `unlockCallback`.
+- The hook's initcode embeds the vaults' creation code. EIP-3860 allows 49,152 bytes; a test asserts a margin, and `HookMiner` mines with the full creation code. The M2 testnet deployment is superseded by the M9 deployment.
+- Size protocol: both runtime sizes stay below 23,800 bytes. If the vaults exceed it, the standby fund and accrual move to a third contract `BallastStandby` under the rules in ADR-046 (written with measurements first). No further splits without maintainer approval. No `delegatecall`, proxies or dispatcher mega-functions.
+**Consequences:** each liquidity operation now also triggers a hook callback (gas up; re-measured in TESTING). `previewDeposit`/`previewRedeem` move to the lens (estimates). Mining and the manifest cover two addresses.
+
+## ADR-046 — Compiler settings, `BallastStandby`, and the size/initcode measurements
+**Context:** After the ADR-045 split the sizes were measured with `forge build --sizes` (solc 0.8.26, cancun, `optimizer = true`, `optimizer_runs = 200`; `via_ir` needed for stack depth in the vault operations).
+
+| Build | Hook runtime | Hook initcode | Vaults runtime | Vaults initcode | Standby runtime |
+|---|---|---|---|---|---|
+| Split custody, legacy pipeline | 14,556 | 56,277 | 34,668 | 37,068 | n/a |
+| Split custody, `via_ir` | 14,027 | 50,052 | 29,912 | 32,060 | n/a |
+| + `BallastStandby` (fund, rate, accrual), `via_ir` | 14,027 | 53,457 | 28,959 | 35,465 | 3,105 |
+
+Limits: runtime 23,800 (24,576 hard); hook initcode 49,152 (EIP-3860), margin target 3,000.
+**Findings:** (1) `via_ir` is needed (stack-too-deep in the vault operations) and is 13% smaller than legacy; `optimizer_runs = 1` gained nothing. (2) The standby split lowered the vaults runtime by only 953 bytes while *raising* the hook's initcode by 3,405, because the hook's initcode embeds the vaults' creation code, which embeds the standby's. (3) The vaults runtime is still 5.2 KB over, and the hook initcode is 4.3 KB over the EIP-3860 limit.
+**Status:** `BallastStandby` follows the maintainer's rules (vaults own all liquidity; the standby holds only the sponsor fund as claims, pays rewards by claim transfer to the vaults, calls nothing but the PoolManager; call graph acyclic). The remaining gap needs a maintainer decision (see PROGRESS.md); no further split has been made.
+
+## ADR-047 — Exit netting uses the earliest possible release, not `lockedUntil`
+**Context:** `max(maturity, lockedUntil)` assumes the lock lasts to its hard cap, but the lock can end earlier when the market calms, so it overstates guaranteed depth.
+**Decision (maintainer-approved):** `earliestRelease = min(lockExpiry, earliestCalm)`, `lockExpiry = stressStartedAt + maxStressLock`; `earliestCalm` is `now` in CALM (no lock) or when the lock has expired, `now + calmDuration` in STRESS, and `max(now, belowExitSince + calmDuration)` in RECOVERING (`belowExitSince` is the calm timer's start; 0 means the timer is not running, so `now + calmDuration`). The effective exit time of a ticket is `max(maturity, earliestRelease)`. `lockedUntil` stays in `StressInfo` and `lockState()` as informational: an **upper bound only**. `StressInfo.earliestRelease` is added. Exact formula in MATH §5a; SPEC R-VIEW-2/R-VIEW-3; vectors added to the stress reference tests.
+
+## ADR-048 — Bucketed ticket aggregation for exit netting; previews move to the lens
+**Context:** `liveDepth` must net tickets maturing within a horizon, but loops over tickets are unbounded and a capped open-ticket list can be griefed.
+**Decision:** Tickets keep exact maturity for claims. For netting, each vault keeps `EXIT_BUCKETS = 16` maturity buckets of width `ceil(exitNotice / 16)` seconds plus a matured pool. A bucket counts as exiting when its start (maturity rounded down) is within the horizon, so the figure is never below the exact one (conservative). A slot reused by a later epoch folds into the matured pool. Views are bounded by `MAX_VAULTS × 16`. `previewDeposit`/`previewRedeem` move to `BallastLens`; they are estimates.
+
+## ADR-049 — Re-range dust rule
+**Decision:** Re-range removes all liquidity and re-adds the curator's `liquidities` in one unlock; the net per currency settles against vault idle. If idle cannot cover a shortfall, the largest new position is shrunk by the minimal liquidity whose removal covers it (once per currency); otherwise `InsufficientIdle`. Coverage is then checked (`CoverageBelowCommitment`). Test bound: idle decrease per re-range ≤ 2 × (n_old + n_new) per currency for a same-range re-range.
+
+## ADR-050 — Vaults are deployed separately and bound to the hook in both directions; `BallastShares`, `BallastDepth`, `extsload`
+**Status:** accepted (maintainer decision, 2026-11-26). Supersedes the "created by the hook in its constructor" part of ADR-045; the rest of ADR-045 stands.
+**Context:** After ADR-046 the hook's initcode (53,457 bytes) exceeded EIP-3860's 49,152 because it embedded the vaults' creation code, and the vaults' runtime (28,959) exceeded the target.
+**Decision:**
+1. *Deployment order.* The deployer predicts the vaults address from its nonce (CREATE), the hook salt is mined over the full creation code plus constructor arguments (which contain the predicted vaults address), the vaults are deployed with the mined hook address as an immutable, then the hook is deployed with CREATE2. The hook's initcode no longer embeds the vaults (18,117 bytes).
+2. *Bindings.* The hook's constructor requires `vaults.code.length > 0`, `vaults.hook() == address(this)` and `vaults.configHash() == keccak256(abi.encode(config))`. These constructor-time staticcalls are the hook's only calls into the vaults and are an explicit, documented exception to the acyclic rule (after construction the hook calls nothing on the vaults). The vaults' constructor cannot check the hook (it has no code yet); instead every vault entrypoint needs an existing vault, vaults can only be created after the pool is bound, and binding requires the hook to have code. `DeployBallast` asserts the nonce, both predicted addresses and both directions; `script/VerifyBinding.s.sol` asserts the full graph (hook.vaults, vaults.hook, shares.vaults, standby.vaults, config hash, flags, pool id, lens). A deployment is valid only if it passes.
+3. *Threat T20 (mis-binding at deployment)* is added to the threat model with these mitigations. G-1 is reworded: "Only the `BallastVaults` contract bound immutably at deployment can add or remove liquidity; the hook's callbacks enforce this with an explicit sender check."
+4. *`BallastShares`* (ERC-6909 on v4-core's `ERC6909` plus `totalSupply`) is created by the vaults' constructor with `vaults = msg.sender`; only the vaults can mint, burn or `move` (escrow). Escrow is the vaults' own balance there. INV-4 reads: `totalSupply(v) = Σ balances of v (holders, the vaults' escrow balance, address(0))`.
+5. *`BallastDepth`* is a stateless external wrapper over `DepthMath`/`BandMath` (and the re-range dust formula), created by the vaults' constructor. The lens, the vaults and the standby accounting use the same library code; `BallastDepthDifferential` compares the contract to the library on fuzzed inputs. It holds no funds and no state, so it cannot affect custody; it was not hosted in `BallastStandby` because the standby holds the sponsor fund.
+6. *`extsload`.* The vaults expose `extsload(slot, n)` as their only added read primitive. The lens decodes vault state with it; the vault views (`vault`, `positionsOf`, `ticket`, `record`, `exitingShares`, `vaultCount`) moved to the lens. `VaultsLayout` pins the slots; `LensLayout.t.sol` compares every decoded field with the vaults' state through `BallastVaultsHarness`, so a layout change breaks the build. `docs/storage-layout.md` is generated from `forge inspect` (M11).
+**Measurements** (`via_ir`, `optimizer_runs = 200`): hook 14,027 / 18,117 initcode; vaults 24,258 / 36,184; shares 2,022; depth 2,889; standby 3,105; each initcode is more than 12 KB under 46,152 (limit minus the 3,000 margin). Enforced by `test/unit/Sizes.t.sol`.
+
+## ADR-051 — Size ceiling for the vaults, and what was cut to reach it
+**Status:** accepted. The target for every runtime is 23,800 bytes. After the approved reductions the vaults are at 24,258 (margin 318 to EIP-170), inside the permitted band (at most 24,300, margin of at least 250, asserted by `Sizes.t.sol`).
+**Steps, each measured:** 27,334 (shares and depth moved out, views to the lens) → 25,850 (re-range dust formula into `BallastDepth`, one range validator) → 25,350 (modifier body behind private functions, one curator-check helper) → 25,082 (`seed` and `deposit` share one operation, ADR-053) → 24,787 (one settlement routine) → 24,696 (`flagBreach` as an operation, then removed, below) → 24,338 → 24,258 (shared seeded check; `setCommitment` with a zero notice stays pending until the next checkpoint instead of a special branch). `optimizer_runs = 1` fails with stack-too-deep.
+**Cut taken (fallback a):** the public `flagBreach` was removed (ADR-052). Cuts b to d were not needed. If later work pushes the vaults above 24,300, the remaining order applies: (b) `setCommitment` simplification, (c) `deployIdle`, (d) `cancelRedeem`; each needs its own ADR.
+**Removed extra:** the event `FeesCrystallized`, which no document specified.
+
+## ADR-052 — Breach is detected at the first checkpoint after the grace period; no public `flagBreach`
+**Context:** fallback (a) of the size rules. **Decision:** `_updateCoverage` runs in every checkpoint, deposit, redeem, re-range and `deployIdle`. In CALM it clears a breach when coverage is restored, starts the grace clock (`CoverageLost`) on first seeing lost coverage, and flags the breach (`BreachFlagged`, `breachCount++`) at the first call after `rerangeGrace`; accrual stops from then on. Anyone can trigger it with the permissionless `checkpoint(vaultId)`. Outside CALM nothing is enforced (R-COV-4) and the clock resets. SPEC R-COV-1/2, CONTRACTS and TESTING are patched. **Consequence:** the interval ending at the flagging checkpoint accrues at the pre-flag state (as every interval does); the vault earns nothing for intervals after it.
+
+## ADR-053 — Seed and deposit share one operation; one settlement routine
+**Decision:** `_opAdd` implements both: a seed supplies per-position liquidity and mints `INITIAL_SHARES - MINIMUM_SHARES` plus the burned minimum; a deposit scales positions and idle by `ceil(shares / supply)`. Settlement goes through one routine, `_cash(mode, ...)`, which skips zero amounts. Behaviour is unchanged; the change is for code size. The seeded vault's first checkpoint state (`lastCheckpoint`, `lastDepthSample`) is set exactly as before.
+
+## ADR-054 — Tests read `vm.getBlockTimestamp()`, not `block.timestamp`
+**Context:** with `via_ir`, `block.timestamp` read after `vm.warp` inside one test function can be folded to a constant, so `vm.warp(block.timestamp + 1)` in a loop did not advance time and four M2 tests failed with `TimeRegression`. **Decision:** every test reads time with `vm.getBlockTimestamp()`. Source contracts are unaffected (a real transaction sees one timestamp).
+

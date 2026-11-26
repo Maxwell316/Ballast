@@ -70,7 +70,7 @@ contract TotalityHandler is Test {
             : m == 1 ? 1 : m == 2 ? 59 : m == 3 ? 60 : m == 4 ? 61 : (seed >> 8) % (1 << 26);
         if (elapsed + dt > MAX_ELAPSED) dt = 0;
         elapsed += dt;
-        vm.warp(block.timestamp + dt);
+        vm.warp(vm.getBlockTimestamp() + dt);
     }
 
     function _legal(LockState from, LockState to) internal pure returns (bool) {

@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.26;
 
-import {Test} from "forge-std/Test.sol";
+import {BoundDeploy} from "../utils/BoundDeploy.sol";
+import {BallastVaults} from "../../src/BallastVaults.sol";
+import {IBallastHook} from "../../src/interfaces/IBallastHook.sol";
 import {Hooks} from "@uniswap/v4-core/src/libraries/Hooks.sol";
 import {IPoolManager} from "@uniswap/v4-core/src/interfaces/IPoolManager.sol";
 import {HookMiner} from "../../script/utils/HookMiner.sol";
@@ -19,7 +21,7 @@ contract Tiny {
 }
 
 /// @custom:requirement R-DEP-1
-contract HookMinerTest is Test {
+contract HookMinerTest is BoundDeploy {
     function test_ComputeAddress_MatchesForgeCreate2() public {
         bytes memory code = type(Tiny).creationCode;
         bytes memory args = abi.encode(uint256(7));
@@ -64,11 +66,10 @@ contract HookMinerTest is Test {
         uint160 flags = Hooks.BEFORE_INITIALIZE_FLAG | Hooks.AFTER_INITIALIZE_FLAG
             | Hooks.BEFORE_ADD_LIQUIDITY_FLAG | Hooks.BEFORE_REMOVE_LIQUIDITY_FLAG
             | Hooks.BEFORE_SWAP_FLAG;
-        bytes memory args = abi.encode(pm, cfg);
-        (address predicted, bytes32 salt) =
-            HookMiner.find(address(this), flags, type(BallastHook).creationCode, args);
-
-        BallastHook hook = new BallastHook{salt: salt}(pm, cfg);
+        (address predicted, bytes32 salt, BallastVaults vaults) = _mineAndDeployVaults(pm, cfg);
+        BallastHook hook = new BallastHook{salt: salt}(pm, cfg, address(vaults));
+        assertEq(hook.vaults(), address(vaults));
+        assertEq(address(vaults.hook()), predicted);
 
         assertEq(address(hook), predicted, "address matches prediction");
         assertEq(
@@ -98,14 +99,19 @@ contract HookMinerTest is Test {
             | Hooks.BEFORE_ADD_LIQUIDITY_FLAG | Hooks.BEFORE_REMOVE_LIQUIDITY_FLAG
             | Hooks.BEFORE_SWAP_FLAG;
         bytes memory code = type(BallastHook).creationCode;
+        address predictedVaults = _predictVaults();
         address wrong = HookMiner.computeAddress(
-            address(this), bytes32(0), keccak256(abi.encodePacked(code, abi.encode(pm, cfg)))
+            address(this),
+            bytes32(0),
+            keccak256(abi.encodePacked(code, abi.encode(pm, cfg, predictedVaults)))
         );
+        BallastVaults vaults = new BallastVaults(pm, IBallastHook(wrong), cfg);
+        assertEq(address(vaults), predictedVaults);
         assertTrue(
             uint160(wrong) & Hooks.ALL_HOOK_MASK != flags, "salt 0 must not be a mined address"
         );
         vm.expectRevert(abi.encodeWithSelector(Hooks.HookAddressNotValid.selector, wrong));
-        new BallastHook{salt: bytes32(0)}(pm, cfg);
+        new BallastHook{salt: bytes32(0)}(pm, cfg, address(vaults));
     }
 
     function test_RevertWhen_ConfigInvalid() public {
@@ -115,10 +121,8 @@ contract HookMinerTest is Test {
         uint160 flags = Hooks.BEFORE_INITIALIZE_FLAG | Hooks.AFTER_INITIALIZE_FLAG
             | Hooks.BEFORE_ADD_LIQUIDITY_FLAG | Hooks.BEFORE_REMOVE_LIQUIDITY_FLAG
             | Hooks.BEFORE_SWAP_FLAG;
-        (, bytes32 salt) = HookMiner.find(
-            address(this), flags, type(BallastHook).creationCode, abi.encode(pm, cfg)
-        );
+        (, bytes32 salt, BallastVaults vaults) = _mineAndDeployVaults(pm, cfg);
         vm.expectRevert(IBallastErrors.InvalidConfig.selector);
-        new BallastHook{salt: salt}(pm, cfg);
+        new BallastHook{salt: salt}(pm, cfg, address(vaults));
     }
 }

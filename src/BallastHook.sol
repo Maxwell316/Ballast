@@ -6,9 +6,9 @@ import {Hooks} from "@uniswap/v4-core/src/libraries/Hooks.sol";
 import {LPFeeLibrary} from "@uniswap/v4-core/src/libraries/LPFeeLibrary.sol";
 import {StateLibrary} from "@uniswap/v4-core/src/libraries/StateLibrary.sol";
 import {IPoolManager} from "@uniswap/v4-core/src/interfaces/IPoolManager.sol";
+import {Currency} from "@uniswap/v4-core/src/types/Currency.sol";
 import {PoolKey} from "@uniswap/v4-core/src/types/PoolKey.sol";
 import {PoolId, PoolIdLibrary} from "@uniswap/v4-core/src/types/PoolId.sol";
-import {Currency} from "@uniswap/v4-core/src/types/Currency.sol";
 import {
     BeforeSwapDelta,
     BeforeSwapDeltaLibrary
@@ -20,6 +20,7 @@ import {HookPermissions} from "./libraries/HookPermissions.sol";
 import {Observations} from "./libraries/Observations.sol";
 import {StressMachine} from "./libraries/StressMachine.sol";
 import {Transient} from "./libraries/Transient.sol";
+import {IBallastHook} from "./interfaces/IBallastHook.sol";
 import {IBallastPool} from "./interfaces/IBallastPool.sol";
 import {Config, LockState, StressInfo} from "./types/Types.sol";
 
@@ -34,7 +35,13 @@ import {Config, LockState, StressInfo} from "./types/Types.sol";
 /// Swaps are never blockable by Ballast logic (R-STR-10): `_beforeSwap` reverts only on the D-9 guard. Everything
 /// else on that path is total: the oracle update cannot overflow inside the documented domain (MATH §4), the stress
 /// transition is a pure total function (`StressMachine.next`), and no division has a variable divisor.
-contract BallastHook is BaseHook, IBallastPool {
+/// @dev Binding surface of the vaults checked once at construction (ADR-050).
+interface IVaultsBinding {
+    function hook() external view returns (address);
+    function configHash() external view returns (bytes32);
+}
+
+contract BallastHook is BaseHook, IBallastHook {
     using StateLibrary for IPoolManager;
     using PoolIdLibrary for PoolKey;
     using Observations for Observations.Observation[];
@@ -70,6 +77,8 @@ contract BallastHook is BaseHook, IBallastPool {
     /// @dev Stress thresholds in ticks, converted once from bps, rounded to nearest (R-STR-8, ADR-037).
     uint32 private immutable _enterTicks;
     uint32 private immutable _exitTicks;
+    /// @inheritdoc IBallastHook
+    address public immutable vaults;
 
     /// @dev The bound pool (R-POOL-1). Zero until bound.
     PoolId private _poolId;
@@ -85,7 +94,10 @@ contract BallastHook is BaseHook, IBallastPool {
 
     /// @param poolManager_ The v4 PoolManager.
     /// @param cfg Immutable configuration; validated by `ConfigLib.validate` (R-CFG-1).
-    constructor(IPoolManager poolManager_, Config memory cfg) BaseHook(poolManager_) {
+    /// @param vaults_ The already-deployed custody contract this hook admits (ADR-050). Its bindings are checked here.
+    constructor(IPoolManager poolManager_, Config memory cfg, address vaults_)
+        BaseHook(poolManager_)
+    {
         ConfigLib.validate(cfg);
         _collateral = cfg.collateral;
         _quote = cfg.quote;
@@ -109,6 +121,14 @@ contract BallastHook is BaseHook, IBallastPool {
         _maxStandbyRate = cfg.maxStandbyRate;
         _enterTicks = BandMath.bpsToTicksNearest(cfg.stressEnterBps);
         _exitTicks = BandMath.bpsToTicksNearest(cfg.stressExitBps);
+        // The vaults were deployed first with this hook's (mined) address as an immutable. These constructor-time
+        // staticcalls are the hook's only calls into the vaults (ADR-050, T20).
+        if (vaults_.code.length == 0) revert VaultsNotDeployed(vaults_);
+        if (IVaultsBinding(vaults_).hook() != address(this)) revert VaultsBindingMismatch();
+        if (IVaultsBinding(vaults_).configHash() != keccak256(abi.encode(cfg))) {
+            revert VaultsBindingMismatch();
+        }
+        vaults = vaults_;
     }
 
     /// @notice The five permissions Ballast needs and nothing else (D-5). No return-delta flags.
@@ -163,29 +183,32 @@ contract BallastHook is BaseHook, IBallastPool {
         return this.afterInitialize.selector;
     }
 
-    /// @dev Hook-only liquidity: reverts for every caller that reaches it. The hook's own `modifyLiquidity` calls
-    /// never reach it because the PoolManager skips callbacks for self-calls (R-LIQ-4, verified in VERIFICATION F-3).
+    /// @dev Liquidity gate (G-1, ADR-045): only the vaults contract may add liquidity. The PoolManager calls this for
+    /// every caller except the hook itself; the hook never calls `modifyLiquidity` (T19).
     /// @custom:requirement R-LIQ-1
     /// @custom:guarantee G-1
     function _beforeAddLiquidity(
-        address,
+        address sender,
         PoolKey calldata,
         ModifyLiquidityParams calldata,
         bytes calldata
-    ) internal pure override returns (bytes4) {
-        revert ExternalLiquidityForbidden();
+    ) internal view override returns (bytes4) {
+        if (sender != vaults) revert ExternalLiquidityForbidden();
+        return this.beforeAddLiquidity.selector;
     }
 
-    /// @dev See `_beforeAddLiquidity`.
+    /// @dev See `_beforeAddLiquidity`. Zero-liquidity pokes by others are also rejected: v4 routes them to the
+    /// remove callback unless the delta is positive.
     /// @custom:requirement R-LIQ-2
     /// @custom:guarantee G-1
     function _beforeRemoveLiquidity(
-        address,
+        address sender,
         PoolKey calldata,
         ModifyLiquidityParams calldata,
         bytes calldata
-    ) internal pure override returns (bytes4) {
-        revert ExternalLiquidityForbidden();
+    ) internal view override returns (bytes4) {
+        if (sender != vaults) revert ExternalLiquidityForbidden();
+        return this.beforeRemoveLiquidity.selector;
     }
 
     /// @dev The only revert is the D-9 guard (R-TX-1, R-STR-10). Advances the oracle with the pre-swap tick, and
@@ -203,7 +226,8 @@ contract BallastHook is BaseHook, IBallastPool {
         // slither-disable-next-line unused-return
         (, int24 tick,,) = poolManager.getSlot0(key.toId());
         if (Observations.update(_observations, _obs, _now(), tick, _observationInterval)) {
-            _evaluateStress(tick);
+            // slither-disable-next-line unused-return
+            _evaluateStress(tick, false);
         }
         return (this.beforeSwap.selector, BeforeSwapDeltaLibrary.ZERO_DELTA, 0);
     }
@@ -219,7 +243,25 @@ contract BallastHook is BaseHook, IBallastPool {
         // is exact (MATH §4), and it lets the oracle make progress during swap droughts.
         // slither-disable-next-line unused-return
         Observations.update(_observations, _obs, _now(), tick, _observationInterval);
-        _evaluateStress(tick);
+        // slither-disable-next-line unused-return
+        _evaluateStress(tick, false);
+    }
+
+    /// @inheritdoc IBallastHook
+    function evaluateStress() external returns (StressInfo memory info) {
+        if (!_bound) revert PoolNotBound();
+        // slither-disable-next-line unused-return
+        (, int24 tick,,) = poolManager.getSlot0(_poolId);
+        // slither-disable-next-line unused-return
+        Observations.update(_observations, _obs, _now(), tick, _observationInterval);
+        return _info(_evaluateStress(tick, true));
+    }
+
+    /// @inheritdoc IBallastHook
+    function enterVaultOp() external {
+        if (msg.sender != vaults) revert NotVaults(msg.sender);
+        if (Transient.get(Transient.SWAPPED)) revert SwapInSameTransaction();
+        Transient.set(Transient.VAULT_OP, true);
     }
 
     // ─── Views ───
@@ -248,7 +290,10 @@ contract BallastHook is BaseHook, IBallastPool {
         if (!_bound) return info;
         // slither-disable-next-line unused-return
         (, int24 current,,) = poolManager.getSlot0(_poolId);
-        Evaluation memory e = _previewStress(current, true);
+        return _info(_previewStress(current, true));
+    }
+
+    function _info(Evaluation memory e) internal view returns (StressInfo memory info) {
         info = StressInfo({
             state: e.ns,
             oracleWarm: e.warm,
@@ -256,7 +301,8 @@ contract BallastHook is BaseHook, IBallastPool {
             stressStartedAt: e.nc.stressStartedAt,
             lockedUntil: uint40(StressMachine.lockedUntil(e.ns, e.nc)),
             anchorTick: e.anchor,
-            shortTick: e.short
+            shortTick: e.short,
+            earliestRelease: _earliestRelease(e)
         });
     }
 
@@ -364,9 +410,9 @@ contract BallastHook is BaseHook, IBallastPool {
     }
 
     /// @dev Stores the transition and the search cursors, and emits events (R-STR-5: `LockExpired` once).
-    function _evaluateStress(int24 currentTick) internal {
+    function _evaluateStress(int24 currentTick, bool full) internal returns (Evaluation memory e) {
         LockState old = _stress.state;
-        Evaluation memory e = _previewStress(currentTick, false);
+        e = _previewStress(currentTick, full);
         _stress = StressStorage({
             state: e.ns,
             stressStartedAt: e.nc.stressStartedAt,
@@ -394,19 +440,16 @@ contract BallastHook is BaseHook, IBallastPool {
 
     // slither-disable-end timestamp
 
-    // ─── Transient guards (D-9, R-TX-2, R-TX-3) ───
-
-    /// @dev Marks the transaction as containing a vault operation and reverts if it already contained a swap.
-    function _enterVaultOp() internal {
-        if (Transient.get(Transient.SWAPPED)) revert SwapInSameTransaction();
-        Transient.set(Transient.VAULT_OP, true);
-    }
-
-    /// @dev Non-reentrant lock, released at the end of the call (and in any case at the end of the transaction).
-    modifier nonReentrant() {
-        if (Transient.get(Transient.LOCK)) revert Reentrancy();
-        Transient.set(Transient.LOCK, true);
-        _;
-        Transient.set(Transient.LOCK, false);
+    /// @dev Earliest time exits could be allowed again (ADR-047, MATH §5a): now if the lock is inactive; otherwise the
+    /// earlier of the lock end and the earliest return to CALM (a calm period still needs `calmDuration`).
+    function _earliestRelease(Evaluation memory e) internal view returns (uint40) {
+        uint40 nowTs = _now();
+        if (!StressMachine.lockActive(e.ns, e.nc)) return nowTs;
+        uint40 base =
+            e.ns == LockState.RECOVERING && e.nc.belowExitSince != 0 ? e.nc.belowExitSince : nowTs;
+        uint40 t = base + _calmDuration;
+        if (t < nowTs) t = nowTs;
+        uint40 end = uint40(StressMachine.lockedUntil(e.ns, e.nc));
+        return t < end ? t : end;
     }
 }

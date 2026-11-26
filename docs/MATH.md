@@ -85,11 +85,23 @@ Positions entirely behind the current price (already converted) contribute zero.
 **Implementation (ADR-023).** Because of G-1 every unit of pool liquidity belongs to some vault position, so pool-wide figures are sums over `MAX_VAULTS × MAX_POSITIONS` positions. No tick scan is performed.
 
 ### 3.3 Netting maturing exits
-For vault `v` and horizon `h`, let `E_v(h)` be shares in tickets whose effective exit time `max(maturity, lockedUntil) ≤ now + h` and `S_v` total shares (including escrow and burned minimum). Then
+For vault `v` and horizon `h`, let `E_v(h)` be shares in tickets whose effective exit time `max(maturity, earliestRelease) ≤ now + h` (§5a, ADR-047) and `S_v` total shares (including escrow and burned minimum). Then
 ```
 liveDepth_v(h) = floor( liveDepth_v · (S_v − E_v(h)) / S_v )
 ```
-Because `lockedUntil` is included in the effective exit time, a ticket that matures during an active lock is not counted as leaving before the lock ends.
+A ticket that matures during an active lock is counted as leaving no earlier than `earliestRelease`, the earliest the lock could end. `lockedUntil` is not used: it is only an upper bound, and using it would overstate guaranteed depth when the lock ends early. Tickets are aggregated into `EXIT_BUCKETS` maturity buckets (ADR-048); a bucket counts when its start is within the horizon, which never undercounts exits.
+
+### 5a. `earliestRelease`
+```
+lockExpiry    = stressStartedAt + maxStressLock
+earliestCalm  = now                                            if state = CALM or the lock is not active
+              = now + calmDuration                             if state = STRESS
+              = max(now, belowExitSince + calmDuration)        if state = RECOVERING and the calm timer runs
+              = now + calmDuration                             if state = RECOVERING and the timer is not running
+earliestRelease = min(lockExpiry, earliestCalm)
+effectiveExit(ticket) = max(ticket.maturity, earliestRelease)
+```
+The state is the previewed state (R-STR-7). It is a lower bound on when exits can resume: STRESS needs one evaluation below the exit threshold and then `calmDuration` of calm. The lock never lasts beyond `lockExpiry`, so the minimum is exact on the upper side.
 
 ## 4. TWAP
 

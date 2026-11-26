@@ -20,7 +20,9 @@ import {MockERC20} from "../utils/MockERC20.sol";
 import {ConfigFixture} from "../utils/ConfigFixture.sol";
 import {BallastHookHarness} from "../utils/BallastHookHarness.sol";
 import {IBallastErrors} from "../../src/interfaces/IBallastErrors.sol";
-import {Config} from "../../src/types/Types.sol";
+import {BallastVaults} from "../../src/BallastVaults.sol";
+import {IBallastHook} from "../../src/interfaces/IBallastHook.sol";
+import {Config, Range} from "../../src/types/Types.sol";
 
 interface IPositionManagerLike {
     function modifyLiquidities(bytes calldata unlockData, uint256 deadline) external payable;
@@ -51,6 +53,7 @@ contract HookOnlyLiquidityForkTest is Test {
     PoolSwapTest internal swapRouter;
     PoolModifyLiquidityTest internal liqRouter;
     BallastHookHarness internal hook;
+    BallastVaults internal vaults;
     MockERC20 internal collateral;
     MockERC20 internal quote;
     PoolKey internal key;
@@ -78,13 +81,15 @@ contract HookOnlyLiquidityForkTest is Test {
         Config memory c = ConfigFixture.compressed();
         c.collateral = Currency.wrap(address(collateral));
         c.quote = Currency.wrap(address(quote));
+        vaults = new BallastVaults(pm, IBallastHook(HOOK_ADDR), c);
         deployCodeTo(
-            "BallastHookHarness.sol:BallastHookHarness", abi.encode(address(pm), c), HOOK_ADDR
+            "BallastHookHarness.sol:BallastHookHarness",
+            abi.encode(address(pm), c, address(vaults)),
+            HOOK_ADDR
         );
         hook = BallastHookHarness(HOOK_ADDR);
         key = PoolKey(c.collateral, c.quote, c.fee, c.tickSpacing, IHooks(HOOK_ADDR));
         pid = key.toId();
-        hook.setKey(key);
 
         vm.prank(c.initializer);
         pm.initialize(key, TickMath.getSqrtPriceAtTick(0));
@@ -95,9 +100,20 @@ contract HookOnlyLiquidityForkTest is Test {
         quote.mint(address(this), 1e30);
         collateral.approve(address(swapRouter), type(uint256).max);
         quote.approve(address(swapRouter), type(uint256).max);
+        collateral.approve(address(vaults), type(uint256).max);
+        quote.approve(address(vaults), type(uint256).max);
         collateral.approve(address(liqRouter), type(uint256).max);
         quote.approve(address(liqRouter), type(uint256).max);
-        hook.modifyForTest(-6000, 6000, 1e19, bytes32(uint256(1)));
+        _provide(-6000, 6000, 1e19);
+    }
+
+    function _provide(int24 lo, int24 hi, uint128 liq) internal returns (uint256 vaultId) {
+        Range[] memory r = new Range[](1);
+        r[0] = Range(lo, hi);
+        vaultId = vaults.createVault(r, 0, 0);
+        uint128[] memory l = new uint128[](1);
+        l[0] = liq;
+        vaults.seed(vaultId, l, type(uint128).max, type(uint128).max, address(this));
     }
 
     function _forbidden(bytes4 callback) internal view returns (bytes memory) {
@@ -136,7 +152,7 @@ contract HookOnlyLiquidityForkTest is Test {
         );
         params[1] = abi.encode(key.currency0, key.currency1);
         vm.expectRevert(_forbidden(IHooks.beforeAddLiquidity.selector));
-        positionManager.modifyLiquidities(abi.encode(actions, params), block.timestamp + 1);
+        positionManager.modifyLiquidities(abi.encode(actions, params), vm.getBlockTimestamp() + 1);
     }
 
     /// @notice The same PositionManager also cannot add into a range the hook already occupies.
@@ -164,7 +180,7 @@ contract HookOnlyLiquidityForkTest is Test {
         );
         params[1] = abi.encode(key.currency0, key.currency1);
         vm.expectRevert(_forbidden(IHooks.beforeAddLiquidity.selector));
-        positionManager.modifyLiquidities(abi.encode(actions, params), block.timestamp + 1);
+        positionManager.modifyLiquidities(abi.encode(actions, params), vm.getBlockTimestamp() + 1);
     }
 
     /// @notice The deployed liquidity router cannot add, remove, or poke.
@@ -181,19 +197,20 @@ contract HookOnlyLiquidityForkTest is Test {
         );
     }
 
-    /// @notice The hook's own operations succeed on the same PoolManager, and the position is the hook's.
-    function test_HookSelfCall_Succeeds_OnDeployedPoolManager() public {
-        bytes32 salt = bytes32(uint256(2));
-        hook.modifyForTest(-1200, 1200, 3e17, salt);
-        bytes32 posKey = Position.calculatePositionKey(address(hook), -1200, 1200, salt);
+    /// @notice The vaults contract's own liquidity operations succeed on the same PoolManager, and the position is
+    /// owned by the vaults (INV-1), not by the hook.
+    function test_VaultsLiquidity_Succeeds_OnDeployedPoolManager() public {
+        uint256 v = _provide(-1200, 1200, 3e17);
+        bytes32 posKey =
+            Position.calculatePositionKey(address(vaults), -1200, 1200, bytes32(v << 8));
         assertEq(pm.getPositionLiquidity(pid, posKey), 3e17);
-        hook.modifyForTest(-1200, 1200, -3e17, salt);
-        assertEq(pm.getPositionLiquidity(pid, posKey), 0);
+        bytes32 hookKey = Position.calculatePositionKey(address(hook), -1200, 1200, bytes32(v << 8));
+        assertEq(pm.getPositionLiquidity(pid, hookKey), 0, "the hook owns nothing");
     }
 
     /// @notice A swap through the deployed router passes the hook and writes the oracle on the deployed chain.
     function test_Swap_ThroughDeployedRouter_WritesOracle() public {
-        vm.warp(block.timestamp + 120);
+        vm.warp(vm.getBlockTimestamp() + 120);
         swapRouter.swap(
             key,
             SwapParams({
@@ -204,7 +221,7 @@ contract HookOnlyLiquidityForkTest is Test {
             PoolSwapTest.TestSettings({takeClaims: false, settleUsingBurn: false}),
             ""
         );
-        assertEq(hook.obsState().lastSwapTs, uint40(block.timestamp));
+        assertEq(hook.obsState().lastSwapTs, uint40(vm.getBlockTimestamp()));
         assertEq(hook.obsLength(), 2, "seed + one snapshot");
     }
 }

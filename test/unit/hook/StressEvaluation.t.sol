@@ -27,13 +27,15 @@ contract StressEvaluationTest is StressDriver {
         assertEq(uint8(_stored()), uint8(LockState.CALM));
         _crash();
         // Let the short TWAP absorb the fall without any swap (and so without an evaluation).
-        vm.warp(block.timestamp + 200);
+        vm.warp(vm.getBlockTimestamp() + 200);
         assertEq(uint8(_stored()), uint8(LockState.CALM), "nothing evaluated yet");
         (LockState previewed, uint40 until) = hook.lockState();
         assertEq(
             uint8(previewed), uint8(LockState.STRESS), "view previews the transition (R-STR-7)"
         );
-        assertEq(until, uint40(block.timestamp) + 1 hours, "lock ends maxStressLock after now");
+        assertEq(
+            until, uint40(vm.getBlockTimestamp()) + 1 hours, "lock ends maxStressLock after now"
+        );
         assertEq(uint8(_stored()), uint8(LockState.CALM), "view did not write");
 
         vm.recordLogs();
@@ -44,7 +46,7 @@ contract StressEvaluationTest is StressDriver {
         StressInfo memory si = hook.stressInfo();
         assertTrue(si.lockActive);
         assertTrue(si.oracleWarm);
-        assertEq(si.stressStartedAt, uint40(block.timestamp));
+        assertEq(si.stressStartedAt, uint40(vm.getBlockTimestamp()));
 
         // A second poke in the same state emits nothing.
         vm.recordLogs();
@@ -113,7 +115,7 @@ contract StressEvaluationTest is StressDriver {
         assertTrue(hook.stressInfo().lockActive);
 
         // Run past the maximum lock while the market stays displaced.
-        while (block.timestamp < started + 30 minutes + 120) _step(60);
+        while (vm.getBlockTimestamp() < started + 30 minutes + 120) _step(60);
         StressInfo memory si = hook.stressInfo();
         assertFalse(si.lockActive, "lock expired (G-3)");
         assertEq(si.lockedUntil, 0);
@@ -161,13 +163,13 @@ contract StressEvaluationTest is StressDriver {
         _setUpStress(1 hours);
         _warmUp();
         _crash();
-        vm.warp(block.timestamp + 200);
+        vm.warp(vm.getBlockTimestamp() + 200);
         // First swap after the interval: evaluates (and writes a snapshot).
         _swap(false, TINY);
         assertEq(uint8(_stored()), uint8(LockState.STRESS));
         uint256 len = hook.obsLength();
         // A swap 10 s later is inside the snapshot interval: no snapshot, no evaluation.
-        vm.warp(block.timestamp + 10);
+        vm.warp(vm.getBlockTimestamp() + 10);
         _swap(false, TINY);
         assertEq(hook.obsLength(), len, "no snapshot inside the interval");
     }
@@ -177,10 +179,10 @@ contract StressEvaluationTest is StressDriver {
         _setUpStress(1 hours);
         _warmUp();
         uint256 len = hook.obsLength();
-        vm.warp(block.timestamp + 500);
+        vm.warp(vm.getBlockTimestamp() + 500);
         vm.prank(address(0xBEEF));
         hook.pokeStress();
         assertEq(hook.obsLength(), len + 1, "poke wrote a snapshot");
-        assertEq(hook.obsState().lastSwapTs, uint40(block.timestamp));
+        assertEq(hook.obsState().lastSwapTs, uint40(vm.getBlockTimestamp()));
     }
 }

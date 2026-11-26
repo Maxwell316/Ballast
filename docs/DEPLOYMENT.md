@@ -45,9 +45,10 @@ forge script script/DeployBallast.s.sol --rpc-url http://127.0.0.1:8545 --broadc
 1. **Mock assets (if chosen).** Deploy mock collateral and quote ERC-20s and a simple router (Q-4). Record addresses.
 2. **Deploy the hook** with `DeployBallast.s.sol`:
    - Compute flags from `getHookPermissions()` using the `Hooks.*_FLAG` constants.
-   - Mine a salt with our own `HookMiner` (`script/utils`) using the constructor arguments (PoolManager, `Config`).
-   - Deploy through the CREATE2 deployer (the standard constant from `forge-std`).
-   - **Assert** the deployed address's permission bits equal the intended flags.
+   - **Order (ADR-050):** (1) predict the vaults address from the deployer's nonce (`vm.computeCreateAddress`); (2) mine the hook salt with our own `HookMiner` (`script/utils`) over the **full creation code** plus constructor arguments (PoolManager, `Config`, predicted vaults address); (3) deploy `BallastVaults` (CREATE) with the mined hook address as an immutable (it creates `BallastShares`, `BallastStandby`, `BallastDepth`); (4) deploy the hook through the CREATE2 deployer (the standard constant from `forge-std`). The script aborts if the nonce, the vaults address, the hook address or the permission flags differ from the prediction.
+   - Every initcode is below 46,152 bytes (EIP-3860 limit 49,152 minus a 3,000 margin); `test/unit/Sizes.t.sol` enforces it.
+   - The hook's constructor checks the binding (vaults have code, `vaults.hook() == hook`, config hash). Run `VerifyBinding` against the deployed addresses: **a deployment is valid only if it passes** (`HOOK=0x.. LENS=0x.. forge script script/VerifyBinding.s.sol --rpc-url $RPC_URL`).
+   - The manifest records hook, vaults, shares, standby, depthCalc, lens, advisor, salt and pool id (`WRITE_MANIFEST=true`).
    - Deploy `BallastLens` and `SupplyCapAdvisor`.
    - Initialize the pool from the `initializer` account (same broadcast).
    - Write `deployments/<chainId>.json`.
@@ -62,7 +63,7 @@ forge script script/DeployBallast.s.sol --rpc-url http://127.0.0.1:8545 --broadc
 
 | Check | Expected |
 |---|---|
-| External add liquidity via PositionManager | Reverts `ExternalLiquidityForbidden` |
+| External add liquidity via PositionManager | Reverts `ExternalLiquidityForbidden` (gate: `sender == vaults`) |
 | External remove liquidity | Reverts |
 | Seed and deposit | Succeeds; shares minted |
 | Swap in both directions | Succeeds; `beforeSwap` writes observation after the interval |
@@ -101,7 +102,7 @@ There is no upgrade path. A fix means deploying a new hook and pool and migratin
 ## 9. Operational notes
 
 - Demo deployments use compressed windows; time-based behaviour on a public testnet cannot be fast-forwarded. Evidence for time-based behaviour comes from Foundry scenario tests (`prodlike`).
-- Anyone can call `checkpoint`, `flagBreach` and `pokeStress`. The demo script should call `checkpoint` periodically to keep accrual accurate.
+- Anyone can call `checkpoint` (which also records a breach after the grace period) and `pokeStress`. The demo script should call `checkpoint` periodically to keep accrual accurate.
 - Keep a record of the PoolManager's address and the version of v4 used by the target chain. **VERIFY** hook permission bit order on the target chain before mining the final address.
 
 ## 10. Release checklist
@@ -140,3 +141,5 @@ forge script script/DeployBallast.s.sol:DeployBallast \
 
 The script asserts before finishing: the PoolManager and the CREATE2 deployer have code; the hook code exists at the mined address; the address flags equal `getHookPermissions()`; collateral sorts as currency0. `test/fork/DeployBallastScript.t.sol` runs the same script on a fork in CI (skipped without `RPC_URL`).
 
+
+The M2 testnet deployment (hook skeleton, no vaults) is superseded by the M9 deployment of the split architecture (ADR-045).
