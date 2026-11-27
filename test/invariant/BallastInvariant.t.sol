@@ -701,7 +701,9 @@ abstract contract BallastInvariantBase is Matrix {
             assertLt(o.timestamp, prevTs, "INV-11 timestamps strictly increase");
             prevTs = o.timestamp;
             assertEq(
-                int256(o.tickCumulative), handler.expectedCumulative(o.timestamp), "INV-11 cumulative"
+                int256(o.tickCumulative),
+                handler.expectedCumulative(o.timestamp),
+                "INV-11 cumulative"
             );
         }
     }

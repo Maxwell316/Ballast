@@ -150,7 +150,15 @@ abstract contract BruteForce is HookFixture {
         if (bytes(_bfRef).length == 0) _bfRef = vm.readFile("test/data/band_ticks_ref.json");
         // SAFETY: the table holds at most ~92,000 ticks, well inside int24.
         // forge-lint: disable-next-line(unsafe-typecast)
-        return int24(uint24(vm.parseUint(vm.parseJsonStringArray(_bfRef, ".floor")[bps - 1])));
+        return int24(
+            uint24(
+                vm.parseUint(
+                    vm.parseJsonString(
+                        _bfRef, string.concat(".floor[", vm.toString(uint256(bps) - 1), "]")
+                    )
+                )
+            )
+        );
     }
 
     /// @dev The far edge of a band of `bps` impact starting at `nearTick`, in the liquidation direction.
