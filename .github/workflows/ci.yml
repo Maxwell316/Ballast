@@ -20,7 +20,10 @@ jobs:
           FOUNDRY_PROFILE: coverage # instrumented runs with CI-profile fuzz counts would take far too long
         run: |
           # Gas budgets and bytecode sizes are only meaningful for the optimised build; they run in the Tests step above.
-          forge coverage --ir-minimum --report lcov --no-match-path "test/{fork,gas}/*" --no-match-contract SizesTest
+          # The instrumented run starved the hosted runner ("lost communication") once the ordering x construction matrix and
+          # the differential fuzz existed: coverage keeps one variant per ordering (C0Before, C1After) and drops the heavy
+          # differential, which runs in the Tests step.
+          forge coverage --ir-minimum --report lcov --no-match-path "test/{fork,gas}/*" --no-match-contract "SizesTest|LensDifferentialTest|_C0After|_C1Before"
           python3 tools/coverage_gate.py lcov.info src/ --lines 95 --branches 90
       - name: Compliance report
         run: python3 tools/compliance.py --check
