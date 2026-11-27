@@ -16,7 +16,7 @@ M8 (hardening) test work complete and verified locally; docs and M8 report in pr
 
 ## Next
 1. M7 leftover: `docs/storage-layout.md` from `forge inspect`.
-2. M8 leftovers: verify the lighter coverage setup in CI after pushing, `forge snapshot`, the M8 report.
+2. M8 leftovers: `Drought.t.sol` and `Breach.t.sol` scenarios (CLAUDE.md §9.1; the flows are unit-tested but the scenario files do not exist), verify the lighter coverage setup in CI after pushing, `forge snapshot`, the M8 report.
 3. M9 deploy scripts (SeedVaults, FundStandby, CreatePool, RunCrash) and smoke tests; the user broadcasts.
 4. M10 simulation per `analysis/PREREGISTRATION.md`; M11 docs polish.
 
