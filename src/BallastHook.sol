@@ -83,7 +83,9 @@ contract BallastHook is BaseHook, IBallastHook {
     /// @dev The bound pool (R-POOL-1). Zero until bound.
     PoolId private _poolId;
     bool private _bound;
-    bool private _collateralIs0;
+    /// @dev Whether the collateral is currency0. Derived from the immutable configuration, not from binding state, so a
+    /// reader gets the right answer before the pool is initialised (ADR-059; same class of bug as ADR-058).
+    bool private immutable _collateralIs0;
     /// @dev Snapshots of the running accumulator, and its packed state (docs/MATH.md §4).
     Observations.Observation[] internal _observations;
     Observations.State internal _obs;
@@ -101,6 +103,7 @@ contract BallastHook is BaseHook, IBallastHook {
         ConfigLib.validate(cfg);
         _collateral = cfg.collateral;
         _quote = cfg.quote;
+        _collateralIs0 = Currency.unwrap(cfg.collateral) < Currency.unwrap(cfg.quote);
         _sponsor = cfg.sponsor;
         _initializer = cfg.initializer;
         _fee = cfg.fee;
@@ -160,14 +163,11 @@ contract BallastHook is BaseHook, IBallastHook {
         if (_bound) revert PoolAlreadyBound();
         if (key.fee != _fee || key.tickSpacing != _tickSpacing) revert InvalidPoolKey();
 
-        bool collateralIs0 = false;
-        if (key.currency0 == _collateral && key.currency1 == _quote) {
-            collateralIs0 = true;
-        } else if (!(key.currency0 == _quote && key.currency1 == _collateral)) {
-            revert InvalidPoolKey();
-        }
+        // v4 sorts the currencies, so the collateral is currency0 exactly when its address is lower (`_collateralIs0`).
+        (Currency expected0, Currency expected1) =
+            _collateralIs0 ? (_collateral, _quote) : (_quote, _collateral);
+        if (!(key.currency0 == expected0 && key.currency1 == expected1)) revert InvalidPoolKey();
         _bound = true;
-        _collateralIs0 = collateralIs0;
         _poolId = key.toId();
         return this.beforeInitialize.selector;
     }
