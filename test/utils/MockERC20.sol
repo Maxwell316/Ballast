@@ -9,6 +9,8 @@ contract MockERC20 {
     uint256 public totalSupply;
     mapping(address => uint256) public balanceOf;
     mapping(address => mapping(address => uint256)) public allowance;
+    /// @dev Receivers the token refuses to pay (a blocklist token, T13). Empty by default.
+    mapping(address => bool) public blocked;
 
     event Transfer(address indexed from, address indexed to, uint256 amount);
     event Approval(address indexed owner, address indexed spender, uint256 amount);
@@ -17,6 +19,10 @@ contract MockERC20 {
         name = name_;
         symbol = symbol_;
         decimals = decimals_;
+    }
+
+    function setBlocked(address who, bool isBlocked) external {
+        blocked[who] = isBlocked;
     }
 
     function mint(address to, uint256 amount) external {
@@ -48,6 +54,7 @@ contract MockERC20 {
     }
 
     function _move(address from, address to, uint256 amount) private {
+        require(!blocked[to], "MockERC20: receiver blocked");
         balanceOf[from] -= amount;
         balanceOf[to] += amount;
         emit Transfer(from, to, amount);

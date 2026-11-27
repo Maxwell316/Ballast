@@ -14,6 +14,9 @@ ROOT = Path(__file__).resolve().parent.parent
 V = "src/BallastVaults.sol"
 S = "src/BallastStandby.sol"
 L = "src/periphery/BallastLens.sol"
+SH = "src/BallastShares.sol"
+H = "src/BallastHook.sol"
+O = "src/libraries/Observations.sol"
 D = "src/libraries/DepthMath.sol"
 
 MUTATIONS = [
@@ -36,6 +39,14 @@ MUTATIONS = [
     ("DepthMath committed rounds up", D, "uint160 sqrtHi = TickMath.getSqrtPriceAtTick(hi);\n        return collateralIs0\n            ? SqrtPriceMath.getAmount0Delta(sqrtLo, sqrtHi, liquidity, false)\n            : SqrtPriceMath.getAmount1Delta(sqrtLo, sqrtHi, liquidity, false);", "uint160 sqrtHi = TickMath.getSqrtPriceAtTick(hi);\n        return collateralIs0\n            ? SqrtPriceMath.getAmount0Delta(sqrtLo, sqrtHi, liquidity, true)\n            : SqrtPriceMath.getAmount1Delta(sqrtLo, sqrtHi, liquidity, true);"),
     ("DepthMath live rounds up", D, "if (sqrtHi <= sqrtLo) return 0;\n        return collateralIs0\n            ? SqrtPriceMath.getAmount0Delta(sqrtLo, sqrtHi, liquidity, false)\n            : SqrtPriceMath.getAmount1Delta(sqrtLo, sqrtHi, liquidity, false);", "if (sqrtHi <= sqrtLo) return 0;\n        return collateralIs0\n            ? SqrtPriceMath.getAmount0Delta(sqrtLo, sqrtHi, liquidity, true)\n            : SqrtPriceMath.getAmount1Delta(sqrtLo, sqrtHi, liquidity, true);"),
     ("lens netting rounds up", L, "FixedPointMathLib.fullMulDiv(l, s - e, s)", "FixedPointMathLib.fullMulDivUp(l, s - e, s)"),
+    ("shares mint open to anyone", SH, "function mint(address to, uint256 id, uint256 amount) external onlyVaults {", "function mint(address to, uint256 id, uint256 amount) external {"),
+    ("standby rate open to anyone", S, "function setStandbyRate(uint128 rate) external {\n        if (msg.sender != _sponsor) revert NotSponsor(msg.sender);\n", "function setStandbyRate(uint128 rate) external {\n"),
+    ("curator check removed", V, "if (msg.sender != vd.curator) revert NotCurator(msg.sender);", ""),
+    ("vault op allowed after a swap", H, "if (Transient.get(Transient.SWAPPED)) revert SwapInSameTransaction();", ""),
+    ("swap allowed after a vault op", H, "if (Transient.get(Transient.VAULT_OP)) revert VaultOpInSameTransaction();", ""),
+    ("reentrancy lock not enforced", V, "function _lock() private {\n        if (Transient.get(Transient.LOCK)) revert Reentrancy();\n", "function _lock() private {\n"),
+    ("fees credited to idle without claims", V, "_toClaims(_c0(), f0);\n        _toClaims(_c1(), f1);", "_toClaims(_c1(), f1);"),
+    ("oracle cumulative off by one", O, "int256 delta = int256(preSwapTick) * int256(uint256(nowTs - st.lastSwapTs));", "int256 delta = int256(preSwapTick) * int256(uint256(nowTs - st.lastSwapTs)) + 1;"),
     ("dust cap removed", V, "if (uint256(-net) - idle > RERANGE_DUST_CAP) revert InsufficientIdle();", ""),
     ("fees not crystallized before deposit", V, "env = _env(c);\n        _crystallize(c.v, env);\n        _flush(c.v, env);\n        _measure(c.v, env);\n        _accrue(c.v, env, type(uint128).max);", "env = _env(c);\n        _measure(c.v, env);\n        _accrue(c.v, env, type(uint128).max);"),
 ]
@@ -45,13 +56,30 @@ def run(cmd):
     return subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True)
 
 
+# Mutations also run against the handler-based invariant suite (`--invariants`), where the failing invariant is named.
+INVARIANT_LABELS = {
+    "deposit rounds liquidity down",
+    "claim ignores the lock",
+    "rerange coverage check removed",
+    "vault op allowed after a swap",
+    "swap allowed after a vault op",
+    "fees credited to idle without claims",
+    "oracle cumulative off by one",
+    "lens flips the collateral direction",
+}
+
+
 def main():
     # Restore the mutated file even when the runner is terminated (the `finally` below runs on SystemExit).
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(1))
-    picks = sys.argv[1].split("|") if len(sys.argv) > 1 else [""]
+    args = [a for a in sys.argv[1:] if a != "--invariants"]
+    invariants = "--invariants" in sys.argv[1:]
+    picks = args[0].split("|") if args else [""]
     results = []
     for label, f, old, new in MUTATIONS:
         if not any(p in label for p in picks):
+            continue
+        if invariants and label not in INVARIANT_LABELS:
             continue
         path = ROOT / f
         src = path.read_text(encoding="utf-8")
@@ -61,14 +89,24 @@ def main():
             continue
         try:
             path.write_text(src.replace(old, new), encoding="utf-8")
-            r = run(["forge", "test", "--no-match-contract",
+            if invariants:
+                r = subprocess.run(
+                    ["forge", "test", "--match-contract", "BallastInvariantTest_"],
+                    cwd=ROOT, capture_output=True, text=True,
+                    env={**__import__("os").environ, "FOUNDRY_INVARIANT_RUNS": "64", "FOUNDRY_INVARIANT_DEPTH": "64"})
+            else:
+              r = run(["forge", "test", "--no-match-contract",
                      "InvariantTest|Totality|HooksOnChain|DeployBallastScript|HookOnlyLiquidityFork|ObservationsDifferential|ObservationsCursor|BallastDepthDifferential|SizesTest|VaultGasTest"])
             out = r.stdout + r.stderr
             if "Compiler run failed" in out:
                 status = "COMPILE ERROR"
             else:
                 failed = [l for l in out.splitlines() if l.startswith("[FAIL")]
-                status = f"caught by {len(failed)} test(s): " + (failed[0][:110] if failed else "") if failed else "SURVIVED"
+                if invariants:
+                    names = sorted({l.split("] ")[-1].split(" ")[0].split("(")[0] for l in failed})
+                    status = f"caught by {len(failed)} test(s): {', '.join(names)}" if failed else "SURVIVED"
+                else:
+                    status = f"caught by {len(failed)} test(s): " + (failed[0][:110] if failed else "") if failed else "SURVIVED"
         finally:
             path.write_text(src, encoding="utf-8")
         results.append((label, status))

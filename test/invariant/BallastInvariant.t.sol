@@ -8,9 +8,11 @@ import {TickMath} from "@uniswap/v4-core/src/libraries/TickMath.sol";
 import {IPoolManager} from "@uniswap/v4-core/src/interfaces/IPoolManager.sol";
 import {PoolSwapTest} from "@uniswap/v4-core/src/test/PoolSwapTest.sol";
 import {PoolKey} from "@uniswap/v4-core/src/types/PoolKey.sol";
-import {PoolId} from "@uniswap/v4-core/src/types/PoolId.sol";
+import {PoolId, PoolIdLibrary} from "@uniswap/v4-core/src/types/PoolId.sol";
+import {FullMath} from "@uniswap/v4-core/src/libraries/FullMath.sol";
 import {SwapParams} from "@uniswap/v4-core/src/types/PoolOperation.sol";
-import {HookFixture} from "../utils/HookFixture.sol";
+import {Matrix, C0Before, C1After} from "../utils/Matrix.sol";
+import {BallastVaults} from "../../src/BallastVaults.sol";
 import {ConfigFixture} from "../utils/ConfigFixture.sol";
 import {BallastHookHarness} from "../utils/BallastHookHarness.sol";
 import {BallastVaultsHarness} from "../utils/BallastVaultsHarness.sol";
@@ -18,7 +20,69 @@ import {MockERC20} from "../utils/MockERC20.sol";
 import {BallastLens} from "../../src/periphery/BallastLens.sol";
 import {BallastStandby} from "../../src/BallastStandby.sol";
 import {BallastShares} from "../../src/BallastShares.sol";
-import {LockState, Range, StandbyInfo, StressInfo, VaultView} from "../../src/types/Types.sol";
+import {
+    LockState,
+    Position,
+    PositionView,
+    Range,
+    StandbyInfo,
+    StressInfo,
+    VaultView
+} from "../../src/types/Types.sol";
+import {Observations} from "../../src/libraries/Observations.sol";
+
+/// @dev One external call is one transaction: puts a swap and a guarded vault operation in the same transaction, in
+/// either order (INV-14, D-9). The call is expected to revert; success is a violation.
+contract TxMixer {
+    function swapThenDeposit(
+        PoolSwapTest router,
+        PoolKey memory key,
+        bool zeroForOne,
+        uint256 amountIn,
+        BallastVaults v,
+        uint256 vaultId,
+        uint128 shares,
+        address receiver
+    ) external {
+        _swap(router, key, zeroForOne, amountIn);
+        v.deposit(vaultId, shares, type(uint128).max, type(uint128).max, receiver);
+    }
+
+    function depositThenSwap(
+        PoolSwapTest router,
+        PoolKey memory key,
+        bool zeroForOne,
+        uint256 amountIn,
+        BallastVaults v,
+        uint256 vaultId,
+        uint128 shares,
+        address receiver
+    ) external {
+        v.deposit(vaultId, shares, type(uint128).max, type(uint128).max, receiver);
+        _swap(router, key, zeroForOne, amountIn);
+    }
+
+    function approveAll(address token, address spender) external {
+        MockERC20(token).approve(spender, type(uint256).max);
+    }
+
+    function _swap(PoolSwapTest router, PoolKey memory key, bool zeroForOne, uint256 amountIn)
+        internal
+    {
+        router.swap(
+            key,
+            SwapParams({
+                zeroForOne: zeroForOne,
+                amountSpecified: -int256(amountIn),
+                sqrtPriceLimitX96: zeroForOne
+                    ? TickMath.MIN_SQRT_PRICE + 1
+                    : TickMath.MAX_SQRT_PRICE - 1
+            }),
+            PoolSwapTest.TestSettings({takeClaims: false, settleUsingBurn: false}),
+            ""
+        );
+    }
+}
 
 /// @dev Actions of the invariant run: several depositors, the vaults' curators, one trader and the sponsor act on a
 /// real hook, vaults, standby and PoolManager. Every action is wrapped, so reverts are normal; ghost variables record
@@ -40,8 +104,16 @@ contract BallastHandler is Test {
     address internal sponsor = ConfigFixture.SPONSOR;
     address internal seeder;
 
+    using StateLibrary for IPoolManager;
+    using PoolIdLibrary for PoolKey;
+
+    IPoolManager internal pm;
+    TxMixer internal mixer;
     uint256 public vaultCount;
     uint256[] internal tickets;
+    // Observed price path (INV-11): the tick in force from each timestamp on. Price changes only at swaps.
+    uint256[] internal pathTs;
+    int24[] internal pathTick;
     uint256 public fundedTotal;
 
     // ghosts
@@ -52,6 +124,15 @@ contract BallastHandler is Test {
     uint256 public stressEpisodes;
     uint256 public deposits;
     uint256 public reranges;
+    uint256 public calls;
+    uint256 public donations;
+    uint256 public coverageViolations; // INV-7
+    uint256 public roundTrips;
+    uint256 public roundTripCollateralExcess; // INV-5: collateral returned above collateral paid
+    uint256 public roundTripQuoteExcess; // INV-5: quote returned above paid plus every reward credited meanwhile
+    uint256 public sameTxBoth; // INV-14
+    uint256 public warmLost; // INV-15
+    bool internal lastWarm;
     LockState internal lastState;
     uint40 internal lastStart;
     bool internal lastLockActive;
@@ -66,8 +147,10 @@ contract BallastHandler is Test {
         PoolKey memory key_,
         bool c0,
         uint256 vaultCount_,
-        uint256 funded_
+        uint256 funded_,
+        IPoolManager pm_
     ) {
+        pm = pm_;
         hook = hook_;
         vaults = vaults_;
         lens = lens_;
@@ -85,6 +168,47 @@ contract BallastHandler is Test {
             _fund(depositors[i]);
         }
         _fund(trader);
+        mixer = new TxMixer();
+        collateral.mint(address(mixer), 1e27);
+        quote.mint(address(mixer), 1e27);
+        for (uint256 i; i < 2; ++i) {
+            address t = i == 0 ? address(collateral) : address(quote);
+            mixer.approveAll(t, address(vaults));
+            mixer.approveAll(t, address(router));
+        }
+        pathTs.push(vm.getBlockTimestamp());
+        pathTick.push(_spotTick());
+        lastWarm = hook.stressInfo().oracleWarm;
+    }
+
+    function _spotTick() internal view returns (int24 t) {
+        (, t,,) = pm.getSlot0(key.toId());
+    }
+
+    function mixerAddress() external view returns (address) {
+        return address(mixer);
+    }
+
+    function pathLength() external view returns (uint256) {
+        return pathTs.length;
+    }
+
+    /// @dev The tick accumulator at `t` from the observed price path: sum of tick x seconds. Exact, because price only
+    /// changes at swaps (docs/MATH.md §4).
+    function expectedCumulative(uint256 t) external view returns (int256 cum) {
+        uint256 n = pathTs.length;
+        for (uint256 j; j < n; ++j) {
+            uint256 start = pathTs[j];
+            if (start >= t) break;
+            uint256 end = j + 1 < n ? pathTs[j + 1] : t;
+            if (end > t) end = t;
+            cum += int256(pathTick[j]) * int256(end - start);
+        }
+    }
+
+    function _recordPath() internal {
+        pathTs.push(vm.getBlockTimestamp());
+        pathTick.push(_spotTick());
     }
 
     function _fund(address who) internal {
@@ -114,6 +238,7 @@ contract BallastHandler is Test {
     }
 
     function _observe() internal {
+        ++calls;
         StressInfo memory info = hook.stressInfo();
         LockState s = hook.stressStorage().state;
         // Legal transitions only: CALM->STRESS, STRESS->RECOVERING, RECOVERING->STRESS|CALM (INV-12).
@@ -130,6 +255,8 @@ contract BallastHandler is Test {
         {
             if (!lastLockActive && info.lockActive) ++rearmed;
         }
+        if (lastWarm && !info.oracleWarm) ++warmLost; // INV-15
+        lastWarm = info.oracleWarm;
         lastState = s;
         lastStart = info.stressStartedAt;
         lastLockActive = info.lockActive;
@@ -200,6 +327,9 @@ contract BallastHandler is Test {
         vm.prank(curator);
         try vaults.rerange(v, r, liqs) {
             ++reranges;
+            // INV-7: a re-range that succeeds leaves the vault covered.
+            (uint128 depth, uint128 commitment,) = lens.vaultStatus(v);
+            if (depth < commitment) ++coverageViolations;
         } catch {}
         _observe();
     }
@@ -249,6 +379,83 @@ contract BallastHandler is Test {
             ""
         ) {}
             catch {}
+        _recordPath();
+    }
+
+    /// @dev INV-5: deposit, request the exit of the same shares, wait out the notice, claim. Nothing priced moves in
+    /// between (no swap), so the collateral returned never exceeds the collateral paid, and the quote returned
+    /// exceeds the quote paid by at most every reward credited meanwhile (the only legitimate gain).
+    function roundTrip(uint256 actor, uint256 vseed, uint256 amount) external {
+        address a = depositors[actor % 3];
+        uint256 v = _vaultId(vseed);
+        // forge-lint: disable-next-line(unsafe-typecast)
+        uint128 sh = uint128(bound(amount, 1e6, 5e16));
+        uint256 c0 = collateral.balanceOf(a);
+        uint256 q0 = quote.balanceOf(a);
+        vm.prank(a);
+        try vaults.deposit(v, sh, type(uint128).max, type(uint128).max, a) {}
+        catch {
+            _observe();
+            return;
+        }
+        uint256 c1 = collateral.balanceOf(a);
+        uint256 q1 = quote.balanceOf(a);
+        uint256 credited0 = standby.standbyInfo().totalCredited;
+        vm.prank(a);
+        uint256 id;
+        try vaults.requestRedeem(v, sh) returns (uint256 t) {
+            id = t;
+            tickets.push(t);
+        } catch {
+            _observe();
+            return;
+        }
+        vm.warp(vm.getBlockTimestamp() + hook.config().exitNotice + 1);
+        try hook.pokeStress() {} catch {}
+        vm.prank(a);
+        try vaults.claimRedeem(id, a) {
+            ++roundTrips;
+            uint256 gotC = collateral.balanceOf(a) - c1;
+            uint256 gotQ = quote.balanceOf(a) - q1;
+            uint256 paidC = c0 - c1;
+            uint256 paidQ = q0 - q1;
+            if (gotC > paidC) roundTripCollateralExcess += gotC - paidC;
+            uint256 credited = standby.standbyInfo().totalCredited - credited0;
+            if (gotQ > paidQ + credited) roundTripQuoteExcess += gotQ - paidQ - credited;
+        } catch {}
+        _observe();
+    }
+
+    /// @dev INV-14: a swap and a deposit in one transaction, either order, must never both succeed.
+    function mixedTx(bool swapFirst, bool sell, uint256 amount, uint256 vseed, uint256 shares)
+        external
+    {
+        uint256 v = _vaultId(vseed);
+        uint256 amt = bound(amount, 1e9, 1e17);
+        // forge-lint: disable-next-line(unsafe-typecast)
+        uint128 sh = uint128(bound(shares, 1e6, 1e16));
+        bool zeroForOne = sell == collateralIs0;
+        if (swapFirst) {
+            try mixer.swapThenDeposit(router, key, zeroForOne, amt, vaults, v, sh, depositors[0]) {
+                ++sameTxBoth;
+            } catch {}
+        } else {
+            try mixer.depositThenSwap(router, key, zeroForOne, amt, vaults, v, sh, depositors[0]) {
+                ++sameTxBoth;
+            } catch {}
+        }
+        _recordPath();
+        _observe();
+    }
+
+    /// @dev T2 and T9: tokens sent straight to the hook, the vaults, the standby or the share token must not move any
+    /// accounting. Every invariant keeps holding with them present.
+    function donate(uint256 who, uint256 amount, bool inCollateral) external {
+        address[4] memory target =
+            [address(vaults), address(hook), address(standby), address(shares)];
+        (inCollateral ? collateral : quote).mint(target[who % 4], bound(amount, 1, 1e24));
+        ++donations;
+        _observe();
     }
 
     function warp(uint256 dt) external {
@@ -278,14 +485,17 @@ contract BallastHandler is Test {
 
 /// @notice Handler-based invariants over the whole system (M5/M8): INV-1, INV-2, INV-3, INV-4, INV-6, INV-8, INV-12.
 /// @custom:invariant INV-1 INV-2 INV-3 INV-4 INV-6 INV-8 INV-12
-contract BallastInvariantTest is HookFixture {
+abstract contract BallastInvariantBase is Matrix {
     using StateLibrary for IPoolManager;
+
+    uint24 internal band750;
 
     BallastHandler internal handler;
     uint256 internal constant SEEDED_VAULTS = 3;
 
     function setUp() public {
-        _setUpDefault(true, ConfigFixture.compressed(), 0);
+        _setUpMatrix(ConfigFixture.compressed(), 0);
+        band750 = uint24(_tableTicks(750)); // cached: invariant functions do not persist state
         MockERC20 q = MockERC20(address(quote));
         q.mint(ConfigFixture.SPONSOR, 1e18);
         for (uint256 i; i < SEEDED_VAULTS; ++i) {
@@ -309,7 +519,8 @@ contract BallastInvariantTest is HookFixture {
             key,
             collateralIs0,
             SEEDED_VAULTS,
-            1e15
+            1e15,
+            IPoolManager(address(pm))
         );
         // The seeding account (this) keeps its initial shares; hand the handler's actors a share of each vault.
         for (uint256 v = 1; v <= SEEDED_VAULTS; ++v) {
@@ -445,6 +656,156 @@ contract BallastInvariantTest is HookFixture {
         );
     }
 
+    /// INV-5: a deposit followed by the exit of the same shares never returns more collateral than it cost, and
+    /// returns more quote only by the rewards credited in the meantime.
+    function invariant_Inv5_RoundTripNeverReturnsMoreThanWasPaid() public view {
+        assertEq(handler.roundTripCollateralExcess(), 0, "INV-5 collateral");
+        assertEq(handler.roundTripQuoteExcess(), 0, "INV-5 quote beyond credited rewards");
+    }
+
+    /// INV-7: every successful re-range left the vault covered.
+    function invariant_Inv7_ASuccessfulRerangeLeavesTheVaultCovered() public view {
+        assertEq(handler.coverageViolations(), 0, "INV-7");
+    }
+
+    /// INV-14 (D-9): no transaction contained both a swap and a vault operation, in either order.
+    function invariant_Inv14_NoSwapAndVaultOperationInOneTransaction() public view {
+        assertEq(handler.sameTxBoth(), 0, "INV-14");
+    }
+
+    /// INV-15 (R-ORC-7): once the anchor window is covered it stays covered.
+    function invariant_Inv15_WarmIsMonotonic() public view {
+        assertEq(handler.warmLost(), 0, "INV-15");
+    }
+
+    /// INV-10: a longer horizon never shows more depth, and no horizon shows more than the pool absorbs.
+    function invariant_Inv10_LiveDepthIsMonotoneInTheHorizon() public view {
+        uint256 prev = lens.poolAbsorbable(750);
+        uint32[5] memory hs = [uint32(0), 300, 600, 3600, 86_400];
+        for (uint256 i; i < hs.length; ++i) {
+            uint256 d = lens.liveDepth(750, hs[i]);
+            assertLe(d, prev, "INV-10");
+            prev = d;
+        }
+    }
+
+    /// INV-11: observation timestamps strictly increase, and every snapshot's tick accumulator equals the sum of
+    /// tick x seconds over the price path the handler observed (exact: price changes only at swaps).
+    function invariant_Inv11_ObservationsMatchTheRecordedPriceHistory() public view {
+        Observations.State memory st = hook.obsState();
+        uint256 len = hook.obsLength();
+        uint256 prevTs = type(uint256).max;
+        for (uint256 k; k < len; ++k) {
+            Observations.Observation memory o = hook.obsAt((st.index + len - k) % len);
+            if (o.timestamp == 0) break; // an unwritten slot
+            assertLt(o.timestamp, prevTs, "INV-11 timestamps strictly increase");
+            prevTs = o.timestamp;
+            assertEq(
+                int256(o.tickCumulative), handler.expectedCumulative(o.timestamp), "INV-11 cumulative"
+            );
+        }
+    }
+
+    /// INV-3, custody: every token is in a known account (nothing leaked to an address the system could not account
+    /// for), whatever was donated to the hook, the vaults, the standby or the share token.
+    function invariant_Inv3_EveryTokenIsInAKnownAccount() public view {
+        MockERC20[2] memory ts = [collateral, quote];
+        for (uint256 j; j < 2; ++j) {
+            uint256 sum = ts[j].balanceOf(address(handler)) + ts[j].balanceOf(address(this))
+                + ts[j].balanceOf(address(pm)) + ts[j].balanceOf(address(hook))
+                + ts[j].balanceOf(address(vaults)) + ts[j].balanceOf(address(vaults.standby()))
+                + ts[j].balanceOf(address(vaults.shareToken())) + ts[j].balanceOf(address(lens))
+                + ts[j].balanceOf(address(swapRouter)) + ts[j].balanceOf(address(liqRouter))
+                + ts[j].balanceOf(ConfigFixture.SPONSOR) + ts[j].balanceOf(handler.trader())
+                + ts[j].balanceOf(handler.mixerAddress());
+            for (uint256 i; i < 3; ++i) {
+                sum += ts[j].balanceOf(handler.depositors(i));
+            }
+            assertEq(sum, ts[j].totalSupply(), "INV-3 a token is in an unknown account");
+        }
+    }
+
+    /// INV-3, principal: the PoolManager holds at least what the positions' principal rounds down to plus every claim
+    /// the vaults and the standby hold (the slack is uncollected fees, protocol fees, donations and rounding dust, which
+    /// the PoolManager rounds in its own favour). Position amounts use closed-form integer arithmetic written here.
+    function invariant_Inv3_PoolManagerCoversPositionPrincipalAndClaims() public view {
+        (uint160 sqrtP,,,) = IPoolManager(address(pm)).getSlot0(pid);
+        uint256 p0;
+        uint256 p1;
+        uint256 n = lens.vaultCount();
+        for (uint256 v = 1; v <= n; ++v) {
+            PositionView[] memory ps = lens.positionsOf(v);
+            for (uint256 i; i < ps.length; ++i) {
+                (uint256 a0, uint256 a1) =
+                    _principal(ps[i].tickLower, ps[i].tickUpper, ps[i].liquidity, sqrtP);
+                p0 += a0;
+                p1 += a1;
+            }
+        }
+        (MockERC20 t0, MockERC20 t1) = collateralIs0 ? (collateral, quote) : (quote, collateral);
+        uint256 claims0 = pm.balanceOf(address(vaults), uint256(uint160(address(t0))));
+        uint256 claims1 = pm.balanceOf(address(vaults), uint256(uint160(address(t1))));
+        uint256 q = uint256(uint160(address(quote)));
+        uint256 fund = pm.balanceOf(address(vaults.standby()), q);
+        if (address(t0) == address(quote)) claims0 += fund;
+        else claims1 += fund;
+        assertGe(t0.balanceOf(address(pm)), p0 + claims0, "INV-3 principal, currency0");
+        assertGe(t1.balanceOf(address(pm)), p1 + claims1, "INV-3 principal, currency1");
+    }
+
+    function _principal(int24 lo, int24 hi, uint128 liq, uint160 sqrtP)
+        internal
+        pure
+        returns (uint256 a0, uint256 a1)
+    {
+        uint160 a = TickMath.getSqrtPriceAtTick(lo);
+        uint160 b = TickMath.getSqrtPriceAtTick(hi);
+        if (sqrtP <= a) {
+            a0 = FullMath.mulDiv(uint256(liq) << 96, b - a, b) / a;
+        } else if (sqrtP < b) {
+            a0 = FullMath.mulDiv(uint256(liq) << 96, b - sqrtP, b) / sqrtP;
+            a1 = FullMath.mulDiv(liq, sqrtP - a, 1 << 96);
+        } else {
+            a1 = FullMath.mulDiv(liq, b - a, 1 << 96);
+        }
+    }
+
+    /// INV-9 (sampled every 16th call): the lens never reports more pool-wide depth than a real swap through a plain
+    /// pool holding the same positions absorbs between the same edges, and not less than the allowance below it
+    /// (`BruteForce`). The plain pool lives only inside a snapshot, so the run's state is untouched. Skipped when the
+    /// spot is within a band of the tick limits (a crash through all liquidity), where the edge is clamped.
+    function invariant_Inv9_LensNeverOverstatesTheMeasuredDepth() public {
+        if (handler.calls() % 16 != 0) return;
+        (uint160 sqrtP, int24 spot,,) = IPoolManager(address(pm)).getSlot0(pid);
+        if (spot > 800_000 || spot < -800_000) return;
+        Position[] memory all = _allPositions();
+        if (all.length == 0) return;
+        int24 far = collateralIs0 ? spot - int24(band750) : spot + int24(band750);
+        uint256 got = lens.poolAbsorbable(750);
+        uint256 snap = vm.snapshotState();
+        Plain memory p = _plainPool(all, sqrtP, cfg.fee, 0);
+        (uint256 narrow, uint256 wide,) = _absorbTwoStage(p, far);
+        vm.revertToState(snap);
+        assertLe(got, wide, "INV-9 overstates");
+        assertGe(got + tolerance(all.length), narrow, "INV-9 looser than the allowance");
+    }
+
+    function _allPositions() internal view returns (Position[] memory out) {
+        uint256 n = lens.vaultCount();
+        uint256 total;
+        for (uint256 v = 1; v <= n; ++v) {
+            total += lens.positionsOf(v).length;
+        }
+        out = new Position[](total);
+        uint256 j;
+        for (uint256 v = 1; v <= n; ++v) {
+            PositionView[] memory ps = lens.positionsOf(v);
+            for (uint256 i; i < ps.length; ++i) {
+                out[j++] = Position(ps[i].tickLower, ps[i].tickUpper, ps[i].liquidity);
+            }
+        }
+    }
+
     /// Meaningfulness: the run exercises stress, exits and re-ranges (reported by `-vv`, asserted loosely).
     function afterInvariant() public view {
         console2.log("stress episodes", handler.stressEpisodes());
@@ -452,5 +813,12 @@ contract BallastInvariantTest is HookFixture {
         console2.log("deposits", handler.deposits());
         console2.log("reranges", handler.reranges());
         console2.log("credited", vaults.standby().standbyInfo().totalCredited);
+        console2.log("round trips", handler.roundTrips());
+        console2.log("donations", handler.donations());
+        console2.log("calls", handler.calls());
     }
 }
+
+contract BallastInvariantTest_C0Before is BallastInvariantBase, C0Before {}
+
+contract BallastInvariantTest_C1After is BallastInvariantBase, C1After {}
