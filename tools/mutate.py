@@ -5,6 +5,7 @@ suite, records whether any test failed ("caught") and restores the file. Usage: 
 Each mutation is a (label, file, old, new) quadruple; `old` must occur exactly once. Results are appended to
 docs/MUTATION_LOG.md by hand after review (a surviving mutant is either a test gap, to be fixed, or an equivalent
 mutant, to be explained)."""
+import signal
 import subprocess
 import sys
 from pathlib import Path
@@ -13,6 +14,7 @@ ROOT = Path(__file__).resolve().parent.parent
 V = "src/BallastVaults.sol"
 S = "src/BallastStandby.sol"
 L = "src/periphery/BallastLens.sol"
+D = "src/libraries/DepthMath.sol"
 
 MUTATIONS = [
     ("deposit rounds liquidity down", V, "uint128 dl =\n                seeding ? liqs[i] : _u128(VaultMath.ceilShare(", "uint128 dl =\n                seeding ? liqs[i] : _u128(VaultMath.floorShare("),
@@ -30,6 +32,10 @@ MUTATIONS = [
     ("eligible uses the larger sample", V, "env.sample < dExtra ? env.sample : dExtra", "env.sample > dExtra ? env.sample : dExtra"),
     ("live depth not netted for exits", L, "total += e >= s ? 0 : FixedPointMathLib.fullMulDiv(l, s - e, s);", "total += l;"),
     ("exit netting ignores earliestRelease", L, "bool released = hook.stressInfo().earliestRelease <= limit;", "bool released = true;"),
+    ("lens flips the collateral direction", L, "_collateralIs0 = Currency.unwrap(c.collateral) < Currency.unwrap(c.quote);", "_collateralIs0 = Currency.unwrap(c.collateral) > Currency.unwrap(c.quote);"),
+    ("DepthMath committed rounds up", D, "uint160 sqrtHi = TickMath.getSqrtPriceAtTick(hi);\n        return collateralIs0\n            ? SqrtPriceMath.getAmount0Delta(sqrtLo, sqrtHi, liquidity, false)\n            : SqrtPriceMath.getAmount1Delta(sqrtLo, sqrtHi, liquidity, false);", "uint160 sqrtHi = TickMath.getSqrtPriceAtTick(hi);\n        return collateralIs0\n            ? SqrtPriceMath.getAmount0Delta(sqrtLo, sqrtHi, liquidity, true)\n            : SqrtPriceMath.getAmount1Delta(sqrtLo, sqrtHi, liquidity, true);"),
+    ("DepthMath live rounds up", D, "if (sqrtHi <= sqrtLo) return 0;\n        return collateralIs0\n            ? SqrtPriceMath.getAmount0Delta(sqrtLo, sqrtHi, liquidity, false)\n            : SqrtPriceMath.getAmount1Delta(sqrtLo, sqrtHi, liquidity, false);", "if (sqrtHi <= sqrtLo) return 0;\n        return collateralIs0\n            ? SqrtPriceMath.getAmount0Delta(sqrtLo, sqrtHi, liquidity, true)\n            : SqrtPriceMath.getAmount1Delta(sqrtLo, sqrtHi, liquidity, true);"),
+    ("lens netting rounds up", L, "FixedPointMathLib.fullMulDiv(l, s - e, s)", "FixedPointMathLib.fullMulDivUp(l, s - e, s)"),
     ("dust cap removed", V, "if (uint256(-net) - idle > RERANGE_DUST_CAP) revert InsufficientIdle();", ""),
     ("fees not crystallized before deposit", V, "env = _env(c);\n        _crystallize(c.v, env);\n        _flush(c.v, env);\n        _measure(c.v, env);\n        _accrue(c.v, env, type(uint128).max);", "env = _env(c);\n        _measure(c.v, env);\n        _accrue(c.v, env, type(uint128).max);"),
 ]
@@ -40,10 +46,12 @@ def run(cmd):
 
 
 def main():
-    pick = sys.argv[1] if len(sys.argv) > 1 else ""
+    # Restore the mutated file even when the runner is terminated (the `finally` below runs on SystemExit).
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(1))
+    picks = sys.argv[1].split("|") if len(sys.argv) > 1 else [""]
     results = []
     for label, f, old, new in MUTATIONS:
-        if pick and pick not in label:
+        if not any(p in label for p in picks):
             continue
         path = ROOT / f
         src = path.read_text(encoding="utf-8")

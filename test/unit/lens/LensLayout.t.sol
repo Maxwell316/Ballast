@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.26;
 
-import {HookFixture} from "../../utils/HookFixture.sol";
+import {Matrix, C0Before, C0After, C1Before, C1After} from "../../utils/Matrix.sol";
 import {ConfigFixture} from "../../utils/ConfigFixture.sol";
 import {BallastVaults} from "../../../src/BallastVaults.sol";
 import {
@@ -17,9 +17,9 @@ import {
 /// vaults' own state (read through the harness), after each step of a multi-vault lifecycle, so any storage-layout
 /// change breaks the build (ADR-050).
 /// @custom:requirement R-VIEW-4
-contract LensLayoutTest is HookFixture {
+abstract contract LensLayoutBase is Matrix {
     function setUp() public {
-        _setUpDefault(true, ConfigFixture.compressed(), 0);
+        _setUpMatrix(ConfigFixture.compressed(), 0);
     }
 
     function _assertSame(uint256 v) internal view {
@@ -128,3 +128,11 @@ contract LensLayoutTest is HookFixture {
         _assertAll();
     }
 }
+
+contract LensLayoutTest_C0Before is LensLayoutBase, C0Before {}
+
+contract LensLayoutTest_C0After is LensLayoutBase, C0After {}
+
+contract LensLayoutTest_C1Before is LensLayoutBase, C1Before {}
+
+contract LensLayoutTest_C1After is LensLayoutBase, C1After {}

@@ -126,38 +126,7 @@ contract EdgeCasesTest is HookFixture {
         assertEq(after_.idle1, before_.idle1, "the collateral side is untouched by rewards");
     }
 
-    // ─── lens: unseeded vaults, min with commitment, previews ───
-
-    function test_Lens_UnseededVaultCountsNothing_AndPreviewsAreZero() public {
-        _setUpDefault(true, ConfigFixture.compressed(), 0);
-        Range[] memory r = new Range[](1);
-        r[0] = _r(-6000, 6000);
-        uint256 v = vaults.createVault(r, 1e17, 0);
-        assertEq(lens.committedDepth(), 0);
-        assertEq(lens.liveDepth(750, 0), 0);
-        (uint128 a0, uint128 a1) = lens.previewDeposit(v, 1e15);
-        assertEq(a0 + a1, 0);
-        (a0, a1) = lens.previewRedeem(v, 1e15);
-        assertEq(a0 + a1, 0);
-    }
-
-    function test_Lens_CommittedDepth_IsMinOfDepthAndCommitment() public {
-        _setUpDefault(true, ConfigFixture.compressed(), 0);
-        Range[] memory r = new Range[](1);
-        r[0] = _r(-6000, 6000);
-        uint256 low = vaults.createVault(r, 1e16, 0); // commitment far below the depth (about 3.97e17)
-        uint256 high = vaults.createVault(r, 9e17, 0); // commitment above the depth, not yet in breach
-        uint128[] memory l = new uint128[](1);
-        l[0] = 1e19;
-        vaults.seed(low, l, type(uint128).max, type(uint128).max, address(this));
-        vaults.seed(high, l, type(uint128).max, type(uint128).max, address(this));
-        uint256 depth = lens.vaultDepth(low);
-        assertEq(
-            lens.committedDepth(),
-            1e16 + depth,
-            "min(D, K) summed: K for the first, D for the second"
-        );
-    }
+    // ─── lens previews (unseeded, min with commitment and depth vectors: test/unit/lens/LensDepth.t.sol) ───
 
     function test_PreviewRedeem_MatchesExecution() public {
         _setUpDefault(true, ConfigFixture.compressed(), 0);

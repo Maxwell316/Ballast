@@ -84,6 +84,14 @@ Positions entirely behind the current price (already converted) contribute zero.
 
 **Implementation (ADR-023).** Because of G-1 every unit of pool liquidity belongs to some vault position, so pool-wide figures are sums over `MAX_VAULTS × MAX_POSITIONS` positions. No tick scan is performed.
 
+**Reading live depth (not a remainder).** `liveDepth` measures from the current spot, so it is not monotone under a sale. Let a sale of net (post-fee) amount `n` move the spot from `s0` to `s1` through liquidity that is all inside the window. With the far edge `F` held fixed,
+```
+depth(s0 → F) = n + depth(s1 → F)         (exact, up to the roundings below)
+```
+because the collateral absorbed between `s0` and `s1` is exactly `n`. `liveDepth` re-centres the window on `s1`, i.e. uses `F' = s1 + σ·B_i`, which differs from `F` by the distance the price moved; when there is liquidity beyond `F`, `depth(s1 → F')` can exceed `depth(s1 → F)`, and when liquidity per tick is larger at the new price (the collateral = currency0 case at lower prices, collateral = currency1 case at higher prices) it can exceed the pre-sale figure. Both facts are exercised: the identity in `Crash.t.sol` (fixed far edge, tolerance 3 wei: one floor before, one after, one swap round-up; observed 0), the rise in `LensDepth.t.sol`. Committed depth, by contrast, is a function of ranges and the anchor only and does not move with a sale (`LensDepth.t.sol`).
+
+Rounding, measured: the lens floors once per position and segment; v4's swap rounds each step's input up. Against a real swap through a plain pool the lens is therefore never above, and at most `3 · positions + 6` wei below (observed at most `positions + 1` over 1,000 fuzz runs; `LensDifferential.t.sol`). The exact floor is pinned separately by integer arithmetic written in the test (`LensDepth.t.sol`), because a one-wei rounding error is invisible to a comparison with a swap that itself rounds up.
+
 ### 3.3 Netting maturing exits
 For vault `v` and horizon `h`, let `E_v(h)` be shares in tickets whose effective exit time `max(maturity, earliestRelease) ≤ now + h` (§5a, ADR-047) and `S_v` total shares (including escrow and burned minimum). Then
 ```

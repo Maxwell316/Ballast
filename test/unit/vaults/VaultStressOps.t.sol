@@ -2,6 +2,7 @@
 pragma solidity 0.8.26;
 
 import {StressDriver} from "../../utils/StressDriver.sol";
+import {Matrix, C0Before, C0After, C1Before, C1After} from "../../utils/Matrix.sol";
 import {IBallastErrors} from "../../../src/interfaces/IBallastErrors.sol";
 import {LockState, PositionView, Range, VaultView} from "../../../src/types/Types.sol";
 
@@ -11,11 +12,16 @@ import {LockState, PositionView, Range, VaultView} from "../../../src/types/Type
 /// CALM so that recovered tokens sit in idle.
 /// @custom:requirement R-VLT-11 R-COV-1 R-COV-4 R-VIEW-2
 /// @custom:invariant INV-10
-contract VaultStressOpsTest is StressDriver {
+abstract contract VaultStressOpsBase is StressDriver, Matrix {
     uint256 internal v = 1;
 
+    function _setUpM(uint32 maxLock) internal {
+        lensAfterInit = _lensAfter();
+        _setUpStressSide(maxLock, _c0());
+    }
+
     function _setUpIdle(uint32 maxLock) internal {
-        _setUpStress(maxLock);
+        _setUpM(maxLock);
         Range[] memory r = new Range[](1);
         r[0] = Range(-12_000, 12_000);
         uint128[] memory l = new uint128[](1);
@@ -94,7 +100,7 @@ contract VaultStressOpsTest is StressDriver {
     // ─── coverage is not enforced under stress (R-COV-4) ───
 
     function test_Coverage_IsNotEnforcedUnderStress_AndTheGraceStartsFreshAfterCalm() public {
-        _setUpStress(2 hours);
+        _setUpM(2 hours);
         _warmUp();
         vaults.setCommitment(v, 1e18); // far above what the vault commits (about 0.04 of liquidity)
         _crash();
@@ -141,7 +147,7 @@ contract VaultStressOpsTest is StressDriver {
     function testFuzz_LiveDepth_IsMonotoneInTheHorizon_Calm(uint16 impact, uint32 h1, uint32 h2)
         public
     {
-        _setUpStress(1 hours);
+        _setUpM(1 hours);
         _tickets();
         _checkMonotone(
             uint16(bound(impact, 50, 2500)),
@@ -153,7 +159,7 @@ contract VaultStressOpsTest is StressDriver {
     function testFuzz_LiveDepth_IsMonotoneInTheHorizon_Stress(uint16 impact, uint32 h1, uint32 h2)
         public
     {
-        _setUpStress(1 hours);
+        _setUpM(1 hours);
         _tickets();
         _warmUp();
         _crash();
@@ -165,3 +171,11 @@ contract VaultStressOpsTest is StressDriver {
         );
     }
 }
+
+contract VaultStressOpsTest_C0Before is VaultStressOpsBase, C0Before {}
+
+contract VaultStressOpsTest_C0After is VaultStressOpsBase, C0After {}
+
+contract VaultStressOpsTest_C1Before is VaultStressOpsBase, C1Before {}
+
+contract VaultStressOpsTest_C1After is VaultStressOpsBase, C1After {}

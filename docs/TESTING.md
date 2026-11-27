@@ -214,3 +214,35 @@ Searched `src/` and `test/` for memory-struct assignments and storage-to-memory 
 - **Gate mutation sanity:** `sender == vaults` changed to `!=`, and the check removed; both fail the G-1 tests (see MUTATION_LOG.md).
 - **Deployment:** `fork/DeployBallastScript` runs the real script on the fork: CREATE2 hook address flags, both binding directions, `VerifyBinding`, pool initialised.
 - **Time in tests:** read time with `vm.getBlockTimestamp()`, never `block.timestamp` (ADR-054).
+
+## Lens, depth and standby independence audit (M8, 2026-11-27)
+
+Rule: a test about depth passes only if its expected value does not come from the lens, the vaults or the same library on the same inputs. Acceptable sources: **swap** (a real swap through a plain, hookless v4 pool holding the same positions, `test/utils/BruteForce.sol`), **closed form** (arithmetic written in the test, including the off-chain 70-digit vector `397164717108464068` for 1e19 over [-6000, 6000], 779 ticks), **vector** (a committed reference file), **execution** (the tokens a real call moved), **constant** (an input the test chose). The verdict is for the test as found; "fixed" says what replaced a weak source.
+
+| Test | Expected-value source (as found) | Verdict | Action |
+|---|---|---|---|
+| `BallastDepthDifferential.testFuzz_Measure_EqualsLibrary` | the same `DepthMath`/`BandMath` calls on the same inputs | **weak** as depth evidence (it proves the wrapper contract adds nothing) | kept as a wrapper-equivalence test, relabelled; depth evidence now comes from `LensDifferential` (which also holds `vaults.depthCalc` to brute force) and `DifferentialDepthMath` |
+| `BallastDepthDifferential` shrink-liquidity tests | closed form written in the test | ok | none |
+| `DifferentialDepthMath` (grid and fuzz) | swap, both orderings, decimals, LP fee, protocol fee | ok | none (library level) |
+| `DepthMath.t.sol` worked examples | off-chain reference constants | ok | none |
+| `DepthMath.t.sol` properties (monotone, additive) | relations between library calls | property only | none; absolute correctness is the two rows above |
+| `StandbySampling.UsesTheSmallestSample` | `lens.poolAbsorbable` and `lens.vaultDepth`, then `RewardMath.accrue` | **weak** (lens and library as their own oracle) | **fixed**: swap through a plain pool for the live and the anchor sample, closed-form reward `depth x s x rate / 1e18`, both orderings, both lens construction orders |
+| `EdgeCases.Lens_CommittedDepth_IsMinOfDepthAndCommitment` | `lens.vaultDepth(low)` | **weak** | **fixed**, moved to `LensDepth.t.sol`: closed-form vector, both orderings |
+| `EdgeCases.Lens_Unseeded...` | constants (zero) | ok | moved to `LensDepth.t.sol` |
+| `SupplyCapAdvisor.IsMultiplierTimesLiveDepth` | `lens.liveDepth` (for the depth), multiplication (for the advisor) | depth: **weak**; advisor logic: ok | **fixed**: the depth is held to the vector and a swap, then the multiplication |
+| `SupplyCapAdvisor.FallsWhenExitsMature` | closed-form ratio, 1% tolerance | ok but loose | **tightened** to the wei against the vector |
+| `StandbyAccrual.*` | constants (commitment binds), the literal `3e13`, `RewardMath.accrue` | mostly ok; `RewardMath` as oracle in 3 places | **fixed**: closed-form reward; drought assertion held to the vector; both orderings (`_quoteIdle` was hard-wired to currency1) |
+| `VaultStressOps` INV-10 fuzz | `lens.liveDepth` against `lens.liveDepth` and `lens.poolAbsorbable` | self-consistency (properties of one view) | kept; absolute correctness and exit netting are in `LensDifferential`; both orderings added |
+| `VaultRerangeCoverage` depth uses | constants `COVERED`, `UNCOVERED` against the depth; one range check `3.9e17 < d < 4.0e17` | ok; the range check was loose | **tightened** to the vector; both orderings added |
+| `Crash.test_Liquidation...` | constants; `lens.poolAbsorbable` only for `> LIQUIDATION` | ok | both orderings added; direction-aware price assertion |
+| `Crash.test_LiveDepth_NetsExits...` | the 90% ratio applied to `lens.poolAbsorbable` | ratio is closed form, the base was the lens | **fixed**: the base is checked against a swap |
+| `Crash`, fixed-edge test (new) | closed-form net sold; swap for the before figure | ok | **added**: depth to a fixed far edge falls by exactly what was sold, to the wei |
+| `LensLayout.*` | the vaults' own storage through the harness | ok (independent of the lens decoding) | both orderings and both construction orders added |
+| `VaultLifecycle`/`EdgeCases` previews | tokens moved by execution | ok | also run per ordering in `LensDepth.t.sol` with three positions (below, across, above spot) |
+| `VaultGas` | no expected value (measurement) | n/a | none |
+| `LensDifferential` (new, INV-9) | swap through a plain pool; band edges from `band_ticks_ref.json` | ok | **added**: random layouts and spots, both orderings, 18/6, 6/18 and 18/18, fee 0 and non-zero, non-zero protocol fee, lens before and after initialisation, exit netting; `3 x positions + 6` wei allowance (observed at most `positions + 1`) |
+| `LensDepth` exact-floor tests (new) | integer arithmetic written in the test | ok | **added**: one-wei rounding is invisible to a comparison with a swap (the swap rounds up), so the floor is pinned exactly |
+
+Two things the new tests found. First, the lens measures from the hook's anchor, which is a TWAP: with no time elapsed since initialisation the anchor is the spot, so the first version of the differential disagreed by 18%. That is correct behaviour; the test now lets 300 s elapse at the initial tick before moving the spot, and CONTRACTS says so. Second, the `Matrix` self-check showed the Crash fixture builds its pool inside each test, which would have hidden a mis-set variant; it now has its own variant test.
+
+**Mutation evidence** (`tools/mutate.py`, `docs/MUTATION_LOG.md`): flipping the collateral direction in the lens, dropping the exit netting, rounding the committed depth up, rounding the live depth up, and rounding the netting up are each caught (38, 26, 18, 32 and 10 failing tests).

@@ -4,7 +4,7 @@ pragma solidity 0.8.26;
 import {Position as PoolPosition} from "@uniswap/v4-core/src/libraries/Position.sol";
 import {StateLibrary} from "@uniswap/v4-core/src/libraries/StateLibrary.sol";
 import {IPoolManager} from "@uniswap/v4-core/src/interfaces/IPoolManager.sol";
-import {HookFixture} from "../../utils/HookFixture.sol";
+import {Matrix, C0Before, C0After, C1Before, C1After} from "../../utils/Matrix.sol";
 import {ConfigFixture} from "../../utils/ConfigFixture.sol";
 import {IBallastErrors} from "../../../src/interfaces/IBallastErrors.sol";
 import {IBallastEvents} from "../../../src/interfaces/IBallastEvents.sol";
@@ -13,18 +13,18 @@ import {CuratorRecord, PositionView, Range, VaultView} from "../../../src/types/
 /// @notice Atomic re-range, the dust rule, commitment changes, and the coverage and breach flow (M4;
 /// R-VLT-10, R-VLT-12, R-COV-1..4, INV-7).
 /// @dev In a cold-oracle pool the anchor is the initial tick (0), so the band is `[-bandTicks, 0]` and a vault over
-/// (-6000, 6000) with liquidity 1e19 has a committed depth of roughly 3.6e17 collateral.
+/// (-6000, 6000) with liquidity 1e19 has a committed depth of 397164717108464068 collateral raw units (closed form, test/unit/lens/LensDepth.t.sol).
 /// @custom:requirement R-VLT-10 R-VLT-12 R-COV-1 R-COV-2 R-COV-3
 /// @custom:invariant INV-7
 /// @custom:requirement R-VLT-13
-contract VaultRerangeCoverageTest is HookFixture {
+abstract contract VaultRerangeCoverageBase is Matrix {
     using StateLibrary for IPoolManager;
 
     uint128 internal constant COVERED = 3e17; // below the roughly 3.97e17 the wide vault commits
     uint128 internal constant UNCOVERED = 5e17;
 
     function setUp() public {
-        _setUpDefault(true, ConfigFixture.compressed(), 0);
+        _setUpMatrix(ConfigFixture.compressed(), 0);
     }
 
     function _one(int24 lo, int24 hi) internal pure returns (Range[] memory r) {
@@ -52,9 +52,8 @@ contract VaultRerangeCoverageTest is HookFixture {
 
     function test_Fixture_WideVaultCommitsAboutFourTenthsOfACollateralUnit() public {
         uint256 v = _vault(0);
-        uint256 d = lens.vaultDepth(v);
-        assertGt(d, 3.9e17);
-        assertLt(d, 4.0e17);
+        // Closed form floor(1e19 x (1.0001^389.5 - 1)) = 397164717108464068, either ordering (LensDepth.t.sol).
+        assertApproxEqAbs(lens.vaultDepth(v), 397_164_717_108_464_068, 4);
     }
 
     // ─── rerange ───
@@ -264,3 +263,11 @@ contract VaultRerangeCoverageTest is HookFixture {
         assertEq(r.coveredSeconds, 150, "the last 50 s were tracked but not covered");
     }
 }
+
+contract VaultRerangeCoverageTest_C0Before is VaultRerangeCoverageBase, C0Before {}
+
+contract VaultRerangeCoverageTest_C0After is VaultRerangeCoverageBase, C0After {}
+
+contract VaultRerangeCoverageTest_C1Before is VaultRerangeCoverageBase, C1Before {}
+
+contract VaultRerangeCoverageTest_C1After is VaultRerangeCoverageBase, C1After {}

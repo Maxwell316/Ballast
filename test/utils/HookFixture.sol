@@ -49,6 +49,11 @@ abstract contract HookFixture is Test {
     PoolId internal pid;
     Config internal cfg;
     bool internal collateralIs0;
+    /// @dev When true the lens is rebuilt after the pool is initialised (the default build is before), so tests can
+    /// run against both construction orders (ADR-058).
+    bool internal lensAfterInit;
+    /// @dev Token amount minted to this contract by `_setUpWith`; tests with wide ranges at extreme ticks raise it.
+    uint256 internal mintAmount = 1e30;
 
     function _deployInfra() internal {
         vm.warp(T0);
@@ -89,18 +94,24 @@ abstract contract HookFixture is Test {
     function _initPool(int24 tick) internal {
         vm.prank(cfg.initializer);
         pm.initialize(key, TickMath.getSqrtPriceAtTick(tick));
+        if (lensAfterInit) lens = new BallastLens(IBallastHook(HOOK_ADDR), vaults.shareToken());
     }
 
     /// @dev Standard setup: collateral 18 decimals, quote 6, collateral = currency0 unless `c0` is false.
     function _setUpDefault(bool c0, Config memory c, int24 startTick) internal {
+        _setUpWith(c0, 18, 6, c, startTick);
+    }
+
+    /// @dev Setup with explicit token decimals. Mints `mintAmount` of each token to this contract.
+    function _setUpWith(bool c0, uint8 cd, uint8 qd, Config memory c, int24 startTick) internal {
         _deployInfra();
-        _tokens(c0, 18, 6);
+        _tokens(c0, cd, qd);
         _deployHook(c);
         _initPool(startTick);
         MockERC20(address(collateral)).mint(address(hook), 1e30);
         MockERC20(address(quote)).mint(address(hook), 1e30);
-        collateral.mint(address(this), 1e30);
-        quote.mint(address(this), 1e30);
+        collateral.mint(address(this), mintAmount);
+        quote.mint(address(this), mintAmount);
         collateral.approve(address(swapRouter), type(uint256).max);
         quote.approve(address(swapRouter), type(uint256).max);
         collateral.approve(address(vaults), type(uint256).max);

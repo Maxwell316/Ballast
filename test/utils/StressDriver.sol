@@ -2,14 +2,14 @@
 pragma solidity 0.8.26;
 
 import {Vm} from "forge-std/Vm.sol";
-import {HookFixture} from "./HookFixture.sol";
+import {BruteForce} from "./BruteForce.sol";
 import {ConfigFixture} from "./ConfigFixture.sol";
 import {Config, LockState, StressInfo} from "../../src/types/Types.sol";
 
 /// @dev Drives the hook through stress episodes with real swaps. Compressed windows: anchor 1 h, short 5 min,
 /// interval 60 s, enter ~305 ticks (300 bps), exit ~151 ticks (150 bps), calm 10 min.
 /// Liquidity 1e19 on [-12000, 12000] at tick 0, so selling `CRASH` collateral moves the tick about -630.
-abstract contract StressDriver is HookFixture {
+abstract contract StressDriver is BruteForce {
     uint256 internal constant CRASH = 3.2e17;
     uint256 internal constant TINY = 1e6;
 

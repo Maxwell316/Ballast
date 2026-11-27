@@ -2,19 +2,18 @@
 pragma solidity 0.8.26;
 
 import {Vm} from "forge-std/Vm.sol";
-import {HookFixture} from "../../utils/HookFixture.sol";
+import {Matrix, C0Before, C0After, C1Before, C1After} from "../../utils/Matrix.sol";
 import {ConfigFixture} from "../../utils/ConfigFixture.sol";
 import {BallastStandby} from "../../../src/BallastStandby.sol";
 import {IBallastErrors} from "../../../src/interfaces/IBallastErrors.sol";
 import {IBallastEvents} from "../../../src/interfaces/IBallastEvents.sol";
-import {RewardMath} from "../../../src/libraries/RewardMath.sol";
 import {CuratorRecord, Range, StandbyInfo, VaultView} from "../../../src/types/Types.sol";
 
 /// @notice The sponsor-funded standby: funding, the rate, accrual on verified depth, the curator cut, the fund cap and
 /// depletion, breach pausing, reward sniping and the drought (M6; R-SBY-1..7, R-FEE-2, G-5, INV-8).
 /// @custom:requirement R-SBY-1 R-SBY-2 R-SBY-3 R-SBY-4 R-SBY-5 R-SBY-6 R-FEE-2
 /// @custom:guarantee G-5
-contract StandbyAccrualTest is HookFixture {
+abstract contract StandbyAccrualBase is Matrix {
     uint128 internal constant RATE = 1e12; // the configured maximum: 1e-6 quote raw per collateral raw per second
     uint128 internal constant COMMITMENT = 3e17;
     address internal constant BOB = address(0xB0B0);
@@ -23,7 +22,7 @@ contract StandbyAccrualTest is HookFixture {
     uint256 internal v;
 
     function setUp() public {
-        _setUpDefault(true, ConfigFixture.compressed(), 0);
+        _setUpMatrix(ConfigFixture.compressed(), 0);
         standby = BallastStandby(address(vaults.standby()));
         Range[] memory r = new Range[](1);
         r[0] = Range(-6000, 6000);
@@ -52,12 +51,17 @@ contract StandbyAccrualTest is HookFixture {
         standby.setStandbyRate(rate);
     }
 
+    /// @dev Closed form of the reward, written here rather than taken from `RewardMath`: depth x seconds x rate / 1e18.
+    function _reward(uint256 depth, uint256 dt) internal pure returns (uint256) {
+        return depth * dt * RATE / 1e18;
+    }
+
     function _quoteIdle() internal view returns (uint256) {
-        return lens.vault(v).idle1; // collateral is currency0 in this fixture, so quote is currency1
+        return _idleQuote(v);
     }
 
     function _quoteOwed() internal view returns (uint256) {
-        return lens.vault(v).curatorOwed1;
+        return _owedQuote(v);
     }
 
     // ─── funding and rate ───
@@ -105,7 +109,7 @@ contract StandbyAccrualTest is HookFixture {
         uint256 owedBefore = _quoteOwed();
         vaults.checkpoint(v);
         // The depth (about 3.97e17) exceeds the commitment, so the commitment is the eligible depth.
-        uint256 expected = RewardMath.accrue(COMMITMENT, RATE, 100);
+        uint256 expected = _reward(COMMITMENT, 100);
         assertEq(expected, 3e13);
         assertEq(_quoteOwed() - owedBefore, expected / 10, "10% to the curator");
         assertEq(_quoteIdle() - idleBefore, expected - expected / 10, "the rest to holders' idle");
@@ -134,7 +138,7 @@ contract StandbyAccrualTest is HookFixture {
         uint256 idle = _quoteIdle();
         vaults.checkpoint(v);
         uint256 got = (_quoteOwed() - owed) + (_quoteIdle() - idle);
-        assertEq(got, RewardMath.accrue(COMMITMENT, RATE, 300), "only 300 s are paid, not 10,000");
+        assertEq(got, _reward(COMMITMENT, 300), "only 300 s are paid, not 10,000");
     }
 
     function test_Accrual_ZeroWhenRateIsZero_TheDrought() public {
@@ -146,7 +150,8 @@ contract StandbyAccrualTest is HookFixture {
         assertEq(_quoteIdle(), idle, "no rate, no reward");
         assertEq(standby.standbyInfo().totalCredited, 0);
         // Depth views are untouched by the drought; only time-based exits would change them.
-        assertGt(lens.liveDepth(750, 0), 0);
+        // 397164717108464068: closed form for 1e19 over [-6000, 6000], 779 ticks (test/unit/lens/LensDepth.t.sol).
+        assertApproxEqAbs(lens.liveDepth(750, 0), 397_164_717_108_464_068, 4);
     }
 
     function test_Accrual_StopsWhenTheFundRunsOut_AndEmitsDepletedOnce() public {
@@ -243,7 +248,15 @@ contract StandbyAccrualTest is HookFixture {
         uint256 paid = standby.standbyInfo().totalCredited - credited;
         // eligible = min(start sample, now sample, before sample, commitment): the interval is paid on the smaller of
         // the two depths, never on the larger.
-        assertLe(paid, RewardMath.accrue(COMMITMENT, RATE, 100));
+        assertLe(paid, _reward(COMMITMENT, 100));
         assertGt(paid, 0);
     }
 }
+
+contract StandbyAccrualTest_C0Before is StandbyAccrualBase, C0Before {}
+
+contract StandbyAccrualTest_C0After is StandbyAccrualBase, C0After {}
+
+contract StandbyAccrualTest_C1Before is StandbyAccrualBase, C1Before {}
+
+contract StandbyAccrualTest_C1After is StandbyAccrualBase, C1After {}
