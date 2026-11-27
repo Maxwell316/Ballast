@@ -5,6 +5,7 @@ suite, records whether any test failed ("caught") and restores the file. Usage: 
 Each mutation is a (label, file, old, new) quadruple; `old` must occur exactly once. Results are appended to
 docs/MUTATION_LOG.md by hand after review (a surviving mutant is either a test gap, to be fixed, or an equivalent
 mutant, to be explained)."""
+import os
 import signal
 import subprocess
 import sys
@@ -47,6 +48,7 @@ MUTATIONS = [
     ("reentrancy lock not enforced", V, "function _lock() private {\n        if (Transient.get(Transient.LOCK)) revert Reentrancy();\n", "function _lock() private {\n"),
     ("fees credited to idle without claims", V, "_toClaims(_c0(), f0);\n        _toClaims(_c1(), f1);", "_toClaims(_c1(), f1);"),
     ("oracle cumulative off by one", O, "int256 delta = int256(preSwapTick) * int256(uint256(nowTs - st.lastSwapTs));", "int256 delta = int256(preSwapTick) * int256(uint256(nowTs - st.lastSwapTs)) + 1;"),
+    ("deposit idle slice rounds down", V, "s0 = VaultMath.ceilShare(vd.idle0, shares, supply);\n            s1 = VaultMath.ceilShare(vd.idle1, shares, supply);", "s0 = VaultMath.floorShare(vd.idle0, shares, supply);\n            s1 = VaultMath.floorShare(vd.idle1, shares, supply);"),
     ("dust cap removed", V, "if (uint256(-net) - idle > RERANGE_DUST_CAP) revert InsufficientIdle();", ""),
     ("fees not crystallized before deposit", V, "env = _env(c);\n        _crystallize(c.v, env);\n        _flush(c.v, env);\n        _measure(c.v, env);\n        _accrue(c.v, env, type(uint128).max);", "env = _env(c);\n        _measure(c.v, env);\n        _accrue(c.v, env, type(uint128).max);"),
 ]
@@ -65,6 +67,7 @@ INVARIANT_LABELS = {
     "swap allowed after a vault op",
     "fees credited to idle without claims",
     "oracle cumulative off by one",
+    "deposit idle slice rounds down",
     "lens flips the collateral direction",
 }
 
@@ -93,7 +96,10 @@ def main():
                 r = subprocess.run(
                     ["forge", "test", "--match-contract", "BallastInvariantTest_"],
                     cwd=ROOT, capture_output=True, text=True,
-                    env={**__import__("os").environ, "FOUNDRY_INVARIANT_RUNS": "64", "FOUNDRY_INVARIANT_DEPTH": "64"})
+                    env={**os.environ, "FOUNDRY_INVARIANT_RUNS": "64", "FOUNDRY_INVARIANT_DEPTH": "64"})
+            elif os.environ.get("MUTATE_MATCH_PATH"):
+                # Narrow run for mutations whose guards have a dedicated suite (full runs take over ten minutes each).
+                r = run(["forge", "test", "--match-path", os.environ["MUTATE_MATCH_PATH"]])
             else:
               r = run(["forge", "test", "--no-match-contract",
                      "InvariantTest|Totality|HooksOnChain|DeployBallastScript|HookOnlyLiquidityFork|ObservationsDifferential|ObservationsCursor|BallastDepthDifferential|SizesTest|VaultGasTest"])

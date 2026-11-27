@@ -344,14 +344,35 @@ contract VaultLifecycleTest is HookFixture {
         _enter(BOB, v, shares);
         uint128 l1 = lens.positionsOf(v)[0].liquidity;
         assertEq(l1 - l0, (uint256(l0) * shares + supply - 1) / supply, "deposit adds ceil(L*s/S)");
+        // The idle slice is rounded the same way (up for the depositor): pinned exactly, because the round-trip bound
+        // below is masked by the PoolManager's own rounding slack on the principal.
+        VaultView memory vi = lens.vault(v);
+        assertEq(
+            vi.idle0 - vv.idle0,
+            (uint256(vv.idle0) * shares + supply - 1) / supply,
+            "idle0 slice is ceil"
+        );
+        assertEq(
+            vi.idle1 - vv.idle1,
+            (uint256(vv.idle1) * shares + supply - 1) / supply,
+            "idle1 slice is ceil"
+        );
 
         vm.prank(BOB);
         uint256 t = vaults.requestRedeem(v, shares);
         vm.warp(vm.getBlockTimestamp() + 600);
         uint128 l1b = lens.positionsOf(v)[0].liquidity;
-        uint256 supply1 = lens.vault(v).totalShares;
+        VaultView memory vj = lens.vault(v);
+        uint256 supply1 = vj.totalShares;
         vm.prank(BOB);
         vaults.claimRedeem(t, BOB);
+        VaultView memory vk = lens.vault(v);
+        assertEq(
+            vj.idle0 - vk.idle0, (uint256(vj.idle0) * shares) / supply1, "idle0 slice is floor"
+        );
+        assertEq(
+            vj.idle1 - vk.idle1, (uint256(vj.idle1) * shares) / supply1, "idle1 slice is floor"
+        );
         uint128 l2 = lens.positionsOf(v)[0].liquidity;
         assertEq(l1b - l2, (uint256(l1b) * shares) / supply1, "redeem removes floor(L*s/S)");
         assertGe(l2, l0, "vault liquidity never shrinks over the round trip");
