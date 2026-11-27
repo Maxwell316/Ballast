@@ -17,9 +17,10 @@ jobs:
         run: forge test -vvv
       - name: Coverage gate (all of src/, from the end of M2)
         env:
-          FOUNDRY_PROFILE: default # instrumented runs with CI-profile fuzz counts would take far too long
+          FOUNDRY_PROFILE: coverage # instrumented runs with CI-profile fuzz counts would take far too long
         run: |
-          forge coverage --report lcov --no-match-path "test/fork/*"
+          # Gas budgets and bytecode sizes are only meaningful for the optimised build; they run in the Tests step above.
+          forge coverage --ir-minimum --report lcov --no-match-path "test/{fork,gas}/*" --no-match-contract SizesTest
           python3 tools/coverage_gate.py lcov.info src/ --lines 95 --branches 90
       - name: Compliance report
         run: python3 tools/compliance.py --check

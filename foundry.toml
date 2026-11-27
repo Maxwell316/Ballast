@@ -20,6 +20,16 @@ runs = 256
 depth = 128
 fail_on_revert = false
 
+# Instrumented coverage runs measure which lines and branches the tests reach, not how deep the fuzzers go; the fuzz
+# depth is exercised by the default and ci profiles.
+[profile.coverage.fuzz]
+runs = 100
+
+[profile.coverage.invariant]
+runs = 64
+depth = 64
+fail_on_revert = false
+
 [profile.ci.fuzz]
 runs = 10000
 
