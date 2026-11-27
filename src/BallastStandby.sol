@@ -38,6 +38,8 @@ contract BallastStandby is IUnlockCallback, IBallastStandby {
 
     constructor(IPoolManager poolManager_, address vaults_, Config memory cfg) {
         poolManager = poolManager_;
+        // Only `BallastVaults` constructs this contract, passing `address(this)`; zero is unreachable.
+        // slither-disable-next-line missing-zero-check
         vaults = vaults_;
         _quote = cfg.quote;
         _sponsor = cfg.sponsor;
@@ -50,12 +52,15 @@ contract BallastStandby is IUnlockCallback, IBallastStandby {
         if (msg.sender != _sponsor) revert NotSponsor(msg.sender);
         if (amount == 0) revert ZeroShares();
         if (Transient.get(Transient.LOCK)) revert Reentrancy();
-        Transient.set(Transient.LOCK, true);
-        poolManager.unlock(abi.encode(msg.sender, amount));
-        Transient.set(Transient.LOCK, false);
+        // Effects first (checks-effects-interactions): a failing unlock reverts all of it, and the callback does not
+        // read the fund. The transient lock blocks re-entry through a hostile quote token during the unlock.
         _fund += amount;
         _depleted = false;
         emit StandbyFunded(msg.sender, amount);
+        Transient.set(Transient.LOCK, true);
+        // slither-disable-next-line unused-return
+        poolManager.unlock(abi.encode(msg.sender, amount));
+        Transient.set(Transient.LOCK, false);
     }
 
     /// @inheritdoc IBallastStandby
@@ -92,14 +97,14 @@ contract BallastStandby is IUnlockCallback, IBallastStandby {
         uint128 r = uint128(reward);
         _fund = fund - r;
         _credited += reward;
-        // The reward is quote claims already held here; handing them to the vaults moves the claims in step with
-        // the vaults' ledger credit (INV-3).
-        // slither-disable-next-line unused-return
-        poolManager.transfer(vaults, uint256(uint160(Currency.unwrap(_quote))), reward);
         if (fund == r && !_depleted) {
             _depleted = true;
             emit StandbyDepleted();
         }
+        // The reward is quote claims already held here; handing them to the vaults moves the claims in step with
+        // the vaults' ledger credit (INV-3). Last, after every state change (checks-effects-interactions).
+        // slither-disable-next-line unused-return
+        poolManager.transfer(vaults, uint256(uint160(Currency.unwrap(_quote))), reward);
     }
 
     /// @inheritdoc IBallastStandby

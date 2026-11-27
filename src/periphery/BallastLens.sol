@@ -66,6 +66,8 @@ contract BallastLens is IBallastLens {
 
     // ─── Decoding helpers ───
 
+    // View-only helper; bounded by MAX_VAULTS x MAX_POSITIONS (R-VIEW-4).
+    // slither-disable-next-line calls-loop
     function _slots(bytes32 slot, uint256 n) internal view returns (bytes32[] memory) {
         return vaults.extsload(slot, n);
     }
@@ -100,6 +102,8 @@ contract BallastLens is IBallastLens {
         return uint256(_word(bytes32(L.SLOT_VAULT_COUNT)));
     }
 
+    // View-only helper; every caller loops over at most MAX_VAULTS (16) vaults (R-VIEW-4).
+    // slither-disable-next-line calls-loop
     function _supply(uint256 v) internal view returns (uint256) {
         return shareToken.totalSupply(v);
     }
@@ -179,7 +183,7 @@ contract BallastLens is IBallastLens {
 
     /// @inheritdoc IBallastDepthOracle
     function lockState() external view returns (LockState state, uint40 lockedUntil) {
-        return hook.lockState();
+        (state, lockedUntil) = hook.lockState();
     }
 
     // ─── Depth views ───
@@ -246,6 +250,7 @@ contract BallastLens is IBallastLens {
 
     /// @inheritdoc IBallastLens
     function poolAbsorbable(uint16 impactBps) external view returns (uint256 total) {
+        // slither-disable-next-line unused-return
         (uint160 sqrtP, int24 tick,,) = poolManager.getSlot0(PoolId.wrap(_poolId()));
         uint24 bt = BandMath.bpsToTicksDown(impactBps);
         uint256 n = _count();
@@ -257,9 +262,12 @@ contract BallastLens is IBallastLens {
     /// @inheritdoc IBallastDepthOracle
     /// @dev Per vault: live depth from spot times `(supply - exiting) / supply`, rounded down (ADR-047, R-VIEW-2).
     function liveDepth(uint16 impactBps, uint32 horizon) external view returns (uint256 total) {
+        // slither-disable-next-line unused-return
         (uint160 sqrtP, int24 tick,,) = poolManager.getSlot0(PoolId.wrap(_poolId()));
         uint24 bt = BandMath.bpsToTicksDown(impactBps);
         uint256 limit = uint256(block.timestamp) + horizon;
+        // View-only netting horizon; the comparison is not a precision gate or a source of randomness.
+        // slither-disable-next-line timestamp
         bool released = hook.stressInfo().earliestRelease <= limit;
         uint256 n = _count();
         for (uint256 v = 1; v <= n; ++v) {
@@ -284,6 +292,8 @@ contract BallastLens is IBallastLens {
 
     /// @dev Matured pool plus every bucket whose epoch start is within `limit`. Bucket starts round maturity down, so
     /// the count is never below the exact figure.
+    // View-only comparison of a bucket's start with the netting horizon; not a precision gate or a source of randomness.
+    // slither-disable-start timestamp
     function _exiting(uint256 v, uint256 limit) internal view returns (uint256 shares) {
         shares = L.field(_word(L.maturedSlot(v)), 0, 16);
         bytes32[] memory b = _slots(L.bucketsSlot(v), EXIT_BUCKETS);
@@ -294,9 +304,12 @@ contract BallastLens is IBallastLens {
         }
     }
 
+    // slither-disable-end timestamp
+
     /// @inheritdoc IBallastLens
     function exitingShares(uint256 vaultId, uint32 horizon) external view returns (uint256) {
         uint256 limit = uint256(block.timestamp) + horizon;
+        // slither-disable-next-line timestamp
         if (hook.stressInfo().earliestRelease > limit) return 0;
         return _exiting(vaultId, limit);
     }
@@ -328,10 +341,11 @@ contract BallastLens is IBallastLens {
     {
         uint256 supply = _supply(vaultId);
         if (supply == 0) return (0, 0);
+        // slither-disable-next-line unused-return
         (uint160 sqrtP,,,) = poolManager.getSlot0(PoolId.wrap(_poolId()));
         Position[] memory ps = _positions(vaultId);
-        uint256 t0;
-        uint256 t1;
+        uint256 t0 = 0;
+        uint256 t1 = 0;
         for (uint256 i; i < ps.length; ++i) {
             uint256 dl = add
                 ? VaultMath.ceilShare(ps[i].liquidity, shares, supply)

@@ -67,7 +67,7 @@ contract BallastDepth {
     ) external pure returns (uint256 dl) {
         uint160 lo = TickMath.getSqrtPriceAtTick(tickLower);
         uint160 hi = TickMath.getSqrtPriceAtTick(tickUpper);
-        uint256 unit;
+        uint256 unit = 0;
         if (token0) {
             if (sqrtSpotX96 < hi) {
                 unit = SqrtPriceMath.getAmount0Delta(

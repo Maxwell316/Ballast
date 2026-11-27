@@ -216,11 +216,16 @@ contract BallastVaults is IUnlockCallback, IBallastVaults {
     uint8 internal constant OP_CHECKPOINT = 6;
     uint8 internal constant OP_CLAIM_FEES = 8;
 
+    // `_vaults` and `_buckets` are written through `storage` pointers (`VaultData storage vd = _vaults[id]`,
+    // `_buckets[v][i]`) and in `createVault`; Slither cannot build IR for `createVault`, `_opRerange` and `_opDeploy`
+    // and so reports both mappings as never written (docs/SLITHER_NOTES.md).
+    // slither-disable-next-line uninitialized-state
     mapping(uint256 => VaultData) internal _vaults;
     mapping(uint256 => Position[]) internal _positions;
     mapping(uint256 => CuratorRecord) internal _records;
     mapping(uint256 => uint40) internal _lastEpisode;
     mapping(uint256 => Ticket) internal _tickets;
+    // slither-disable-next-line uninitialized-state
     mapping(uint256 => Bucket[EXIT_BUCKETS]) internal _buckets;
     mapping(uint256 => uint128) internal _maturedEscrow;
     uint256 internal _vaultCount;
@@ -309,9 +314,6 @@ contract BallastVaults is IUnlockCallback, IBallastVaults {
         _vault(vaultId);
         if (shares == 0) revert ZeroShares();
         if (shareToken.balanceOf(msg.sender, vaultId) < shares) revert SharesExceedBalance();
-        // Escrow is a plain move of shares to this contract's own balance; supply is unchanged, so escrowed shares
-        // keep earning and bearing risk (R-VLT-7). The former owner can no longer transfer them.
-        shareToken.move(msg.sender, address(this), vaultId, shares);
         uint40 maturity = _now() + _exitNotice;
         uint40 epoch = maturity / _bucketWidth();
         ticketId = ++_ticketCount;
@@ -320,6 +322,11 @@ contract BallastVaults is IUnlockCallback, IBallastVaults {
         _tickets[ticketId] = Ticket(msg.sender, maturity, uint16(vaultId), shares, epoch);
         _bucketAdd(vaultId, epoch, shares);
         emit RedeemRequested(ticketId, vaultId, msg.sender, shares, maturity);
+        // Escrow is a plain move of shares to this contract's own balance; supply is unchanged, so escrowed shares
+        // keep earning and bearing risk (R-VLT-7). The former owner can no longer transfer them. Last, after every
+        // state change (checks-effects-interactions): the balance was checked above, so the move cannot fail for
+        // that reason, and any failure reverts the whole request.
+        shareToken.move(msg.sender, address(this), vaultId, shares);
     }
 
     /// @inheritdoc IBallastVaults
@@ -423,6 +430,8 @@ contract BallastVaults is IUnlockCallback, IBallastVaults {
     {
         _curatorVault(vaultId);
         if (to == address(0)) revert InvalidReceiver();
+        // A memory struct starts zeroed; every field read later is assigned below.
+        // slither-disable-next-line uninitialized-local
         OpCtx memory c;
         c.op = OP_CLAIM_FEES;
         c.v = vaultId;
@@ -480,8 +489,11 @@ contract BallastVaults is IUnlockCallback, IBallastVaults {
         Env memory env = seeding ? _env(c) : _prepare(c);
         uint256 supply = seeding ? 0 : _supplyOf(c.v);
         Position[] storage ps = _positions[c.v];
+        // Accumulators: they start at the language's zero and are only ever added to.
+        // slither-disable-start uninitialized-local
         uint256 p0;
         uint256 p1;
+        // slither-disable-end uninitialized-local
         for (uint256 i; i < ps.length; ++i) {
             uint128 dl =
                 seeding ? liqs[i] : _u128(VaultMath.ceilShare(ps[i].liquidity, shares, supply));
@@ -493,8 +505,11 @@ contract BallastVaults is IUnlockCallback, IBallastVaults {
             p1 += _neg(a1);
         }
         VaultData storage vd = _vaults[c.v];
+        // Accumulators: they start at the language's zero and are only ever added to.
+        // slither-disable-start uninitialized-local
         uint256 s0;
         uint256 s1;
+        // slither-disable-end uninitialized-local
         if (seeding) {
             if (p0 == 0 && p1 == 0) revert InvalidLiquidities();
         } else {
@@ -534,8 +549,11 @@ contract BallastVaults is IUnlockCallback, IBallastVaults {
         Env memory env = _prepare(c);
         uint256 supply = _supplyOf(c.v);
         Position[] storage ps = _positions[c.v];
+        // Accumulators: they start at the language's zero and are only ever added to.
+        // slither-disable-start uninitialized-local
         uint256 r0;
         uint256 r1;
+        // slither-disable-end uninitialized-local
         for (uint256 i; i < ps.length; ++i) {
             if (ps[i].liquidity == 0) continue;
             // Rounds down: the leaving holder receives at most a proportional slice (R-VLT-8, INV-5).
@@ -576,8 +594,11 @@ contract BallastVaults is IUnlockCallback, IBallastVaults {
         VaultData storage vd = _vaults[c.v];
         Position[] storage ps = _positions[c.v];
 
+        // Accumulators: they start at the language's zero and are only ever added to.
+        // slither-disable-start uninitialized-local
         int256 net0;
         int256 net1;
+        // slither-disable-end uninitialized-local
         for (uint256 i; i < ps.length; ++i) {
             if (ps[i].liquidity == 0) continue;
             (int128 a0, int128 a1) = _modify(
@@ -878,6 +899,9 @@ contract BallastVaults is IUnlockCallback, IBallastVaults {
         internal
         returns (BalanceDelta d, BalanceDelta fees)
     {
+        // The result is returned, not ignored. One call per position, at most MAX_POSITIONS (8) per operation.
+        // slither-disable-start unused-return
+        // slither-disable-start calls-loop
         return poolManager.modifyLiquidity(
             _poolKey(),
             ModifyLiquidityParams({
@@ -885,6 +909,8 @@ contract BallastVaults is IUnlockCallback, IBallastVaults {
             }),
             ""
         );
+        // slither-disable-end calls-loop
+        // slither-disable-end unused-return
     }
 
     /// @dev Zero-liquidity poke of every non-empty position, collecting trading fees (R-FEE-1, R-LIQ-6).
@@ -925,6 +951,11 @@ contract BallastVaults is IUnlockCallback, IBallastVaults {
         env.sample = _sat(d < l ? d : l);
     }
 
+    // The one external call here is `standby.accrue`: an immutable sibling created by this constructor, callable only by
+    // this contract, whose only external call is an ERC-6909 `transfer` on the PoolManager (no receiver hook). It cannot
+    // re-enter, so the writes that follow it are not exposed (reentrancy-benign).
+    // slither-disable-start reentrancy-benign
+    // slither-disable-start reentrancy-events
     /// @dev Standby accrual for the interval since the last checkpoint, record counters, coverage state
     /// (R-SBY-3, R-SBY-4, R-COV-3). `env.sample` is the depth now; `dExtra` a second sample to take the minimum with
     /// (a re-range passes the depth before; others pass `type(uint128).max`).
@@ -941,6 +972,8 @@ contract BallastVaults is IUnlockCallback, IBallastVaults {
         uint128 eligible = RewardMath.eligible(
             vd.lastDepthSample, env.sample < dExtra ? env.sample : dExtra, vd.commitment
         );
+        // Zero unless the standby pays; assigned only on that path.
+        // slither-disable-next-line uninitialized-local
         uint256 reward;
         if (vd.breachSince == 0 && dt != 0) {
             // SAFETY: dt <= maxAccrualInterval, a uint32.
@@ -966,6 +999,8 @@ contract BallastVaults is IUnlockCallback, IBallastVaults {
         _updateCoverage(v, env);
         emit Checkpointed(v, env.sample, eligible, _u128(reward));
     }
+    // slither-disable-end reentrancy-events
+    // slither-disable-end reentrancy-benign
 
     function _creditReward(uint256 v, uint256 reward) internal {
         VaultData storage vd = _vaults[v];

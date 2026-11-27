@@ -442,6 +442,10 @@ contract BallastHook is BaseHook, IBallastHook {
 
     /// @dev Earliest time exits could be allowed again (ADR-047, MATH §5a): now if the lock is inactive; otherwise the
     /// earlier of the lock end and the earliest return to CALM (a calm period still needs `calmDuration`).
+    // Enum equality and a zero sentinel, not a balance or time equality; the timestamp comparisons only floor the result
+    // at `now` and cap it at the lock end. View-only.
+    // slither-disable-start incorrect-equality
+    // slither-disable-start timestamp
     function _earliestRelease(Evaluation memory e) internal view returns (uint40) {
         uint40 nowTs = _now();
         if (!StressMachine.lockActive(e.ns, e.nc)) return nowTs;
@@ -452,4 +456,6 @@ contract BallastHook is BaseHook, IBallastHook {
         uint40 end = uint40(StressMachine.lockedUntil(e.ns, e.nc));
         return t < end ? t : end;
     }
+    // slither-disable-end timestamp
+    // slither-disable-end incorrect-equality
 }
