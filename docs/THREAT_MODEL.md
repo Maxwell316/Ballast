@@ -46,11 +46,13 @@ Capital for price manipulation, the ability to deposit as any actor, to run cont
 **Cost model (lower bound, to be measured in `Manipulation.t.sol`):** the attacker must (a) trade enough collateral to move spot by `θ`, a notional of at least the absorbable depth within `θ`; (b) hold the displacement for a large part of `shortWindow` while arbitrageurs push it back, repeatedly re-trading; (c) pay swap fees on every trade. Fees on the round trip alone are at least `2 · fee · notional`. If the attacker is also a vault shareholder, they recover only their pro rata share of the fees.
 **Accepted approximation:** the calm-period continuity check runs at evaluation points only (R-STR-9); `stressStartedAt` is set only on CALM → STRESS, so relapses cannot extend a lock.
 **Residual:** a well-capitalized attacker can still trigger a lock in a shallow pool. The bounded lock limits the harm, but depositors are trapped in a market they did not choose to be trapped in. Document clearly.
+**Measured (`Manipulation.t.sol`, test parameters, raw units, both collateral orderings agree):** an in-block spike never enters stress (the accumulator adds once per timestamp) and costs 5,898 ppm of its notional, about 98% of two fees. A sustained push locks exits after 180 s of holding; the lock cannot re-arm and releases at `maxStressLock`. The sustained push cost 8,945 ppm of a notional that was 1.15x the vault's in-band depth, unwind included. These are costs in a thin test pool, not mainnet estimates.
 
 ### T4 — Suppressing stress (keeping the lock off during a real crash)
 **Attack:** counter-trade to keep the short TWAP near the anchor.
 **Mitigation:** same TWAP properties; sustained suppression requires continuous buying against sellers.
 **Residual:** a rich attacker can delay locks. The consequence is that exits are not frozen, which is the status quo without Ballast.
+**Measured:** against 3.84e18 of offered sell flow the attacker absorbed 3.817e18 (99.4%) to hold the state CALM. Suppression lasts only while the attacker absorbs the flow.
 
 ### T5 — Standby farming
 **Attack:** collect rewards without delivering useful depth: thin liquidity at the far band edge, flash-adding depth around checkpoints, or timing a re-range.
@@ -58,11 +60,13 @@ Capital for price manipulation, the ability to deposit as any actor, to run cont
 **Mitigation (added):** eligible depth is `min(D_v, Λ_v, K_v)` where `Λ_v` is the vault's live depth from spot, so depth consumed by a falling market stops earning (ADR-025).
 **Known limitation:** depth is counted equally anywhere in the band, so far-edge depth earns the same as near-edge depth. This matches the "price impact up to X" metric risk managers use, but is weaker than a path-weighted measure. Document it; consider weighting as future work.
 **Known limitation:** the endpoint minimum does not bound intermediate dips under anchor drift; see MATH §7.
+**Measured:** a deposit stores the post-add depth sample, so flash depth is not the protection. The protections are the exit notice (600 s in the test, longer than the 300 s accrual interval) and `min(before, after)` on re-ranges: the interval that closes a re-range into 3x depth earns exactly the baseline thin-depth reward.
 
 ### T6 — Reward sniping
 **Attack:** deposit just before rewards are credited and leave right after.
 **Mitigation:** checkpoint (and credit to `idle`) precedes every share change; entrants pay in kind for idle that already includes the credit; the exit notice also deters in-and-out behaviour.
 **Evidence:** fuzz test showing no profit from timing.
+**Measured:** a sniper's net gain was 89,999,999,999,999 against a fair share of 90,000,000,000,000 for the rewards earned while holding (one wei of rounding in the vault's favour); none of the earlier rewards (45e12 would have been taken) is captured.
 
 ### T7 — Reentrancy and callbacks
 **Attack:** reenter through token callbacks, receiver contracts, or the unlock callback.
@@ -122,6 +126,7 @@ Capital for price manipulation, the ability to deposit as any actor, to run cont
 **Accepted for v1.** A spot-based fast trigger is a v2 option; it is manipulable and needs its own ADR (ADR-026).
 **Evidence:** the `ExitRace` scenario test quantifies how much matured-ticket liquidity can exit before the lock engages for given parameters.
 **Residual:** nonzero by design.
+**Measured (`ExitRace.t.sol`):** the liquidity that can leave before the lock engages equals the matured share of the supply (10%, 50% and 90% measured exactly: 100,000, 500,000 and 900,000 ppm of the vault). The lock engaged 180 s after the crash with 60 s evaluation steps, and a ticket requested at the crash is blocked.
 
 ### T19 — Swaps blocked or griefed through Ballast logic
 **Issue:** a hook that can revert in `beforeSwap` can block liquidations, which is the opposite of the product. Possible causes: an oracle overflow, a division by zero, an array bound, a stress-machine corner case, or the D-9 guard.

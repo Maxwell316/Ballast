@@ -53,6 +53,9 @@ Handler-based. Actors: three curators, five depositors, one sponsor, one trader,
 
 Handler actions (each bounded and guarded to avoid trivially reverting calls):
 `createVault`, `seed` (curator), `deposit`, `requestRedeem`, `cancelRedeem`, `claimRedeem` (owner and operator, arbitrary receiver), `rerange` (calm), `deployIdle`, `setCommitment`, `checkpoint`, `pokeStress`, `fundStandby`, `setStandbyRate`, `swapCollateralIn`, `swapQuoteIn` (various sizes), `warp`.
+Added in M8: `roundTrip` (deposit then immediate redeem, INV-5), `mixedTx` (a swap and a vault operation in one transaction through a `TxMixer`, INV-14) and `donate` (tokens, claims and shares sent to the hook and vaults, T2).
+
+The suite is a `Matrix` base with two leaves, `C0Before` and `C1After` (collateral ordering x lens construction order, ADR-059). It runs about 137 s per leaf locally at 256 x 128; the CI profile (1024 x 256) is correspondingly slow, so coverage runs use the `coverage` profile and only one variant per ordering. INV-9 is checked by sampled brute force inside a snapshot.
 
 Ghost variables: total deposited and withdrawn per currency, total credited rewards, total funded, per-vault shares, number of lock violations (must stay zero), observed state transitions.
 
@@ -246,3 +249,9 @@ Rule: a test about depth passes only if its expected value does not come from th
 Two things the new tests found. First, the lens measures from the hook's anchor, which is a TWAP: with no time elapsed since initialisation the anchor is the spot, so the first version of the differential disagreed by 18%. That is correct behaviour; the test now lets 300 s elapse at the initial tick before moving the spot, and CONTRACTS says so. Second, the `Matrix` self-check showed the Crash fixture builds its pool inside each test, which would have hidden a mis-set variant; it now has its own variant test.
 
 **Mutation evidence** (`tools/mutate.py`, `docs/MUTATION_LOG.md`): flipping the collateral direction in the lens, dropping the exit netting, rounding the committed depth up, rounding the live depth up, and rounding the netting up are each caught (38, 26, 18, 32 and 10 failing tests).
+
+## M8 scenario and attacker suites (2026-11-27)
+- `test/scenario/Manipulation.t.sol`: T3 (in-block spike, sustained push), T4, T5, T6. Attacker costs are logged with `-vv` and recorded in THREAT_MODEL.
+- `test/scenario/ExitRace.t.sol`: T18; matured share of the supply versus liquidity that leaves before the lock engages (10%, 50%, 90%), and a late ticket being blocked.
+- `test/unit/vaults/AttackerMocks.t.sol`: blocklisted payout token (T13, whole transaction reverts and funds stay), donations of tokens, claims and shares (T2), a griefing router (T19).
+- INV-13 is the static selector enumeration (`§3.7`): it reads the ABI and fails on any selector not on the expected-caller list, so a new external function cannot ship unreviewed.

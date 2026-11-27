@@ -151,3 +151,21 @@ Survived on the first run and fixed (3):
 Not reported by the first run, re-run after the fixes (4, all caught): live depth not netted for exits; exit netting ignoring `earliestRelease`; rerange dust cap removed; fees not crystallized before a deposit.
 
 **A finding that is not a mutation:** writing the sampling test exposed a real lens defect, now fixed (ADR-058): the lens captured the collateral direction at construction, before the pool was bound.
+
+## M8: invariant mode and new test gaps (2026-11-27)
+`tools/mutate.py --invariants` runs a mutation against `BallastInvariantTest_*` (64 runs x depth 64); `MUTATE_MATCH_PATH` narrows a plain run to one suite. One mutation at a time; `git status src` was clean afterwards.
+
+**Lens, full suite:** caught: collateral direction flipped; live-depth exit netting dropped; `committed`, `live` and netting rounded up.
+
+**Invariant mode.** Caught: lock bypass (INV-6), coverage check removed (INV-7), direction flip (INV-9), both D-9 guard removals (INV-14), oracle off-by-one (INV-11).
+- *Reachability only:* "fees credited to idle without claims". The PoolManager's flash accounting forbids the state, so the mutation cannot be observed by an invariant; it is covered by the unit suite.
+- *Survived (invariant mode), caught by the unit suite:* "deposit rounds liquidity down" (below token resolution at invariant amounts).
+- *Survived (invariant mode):* the idle-slice rounding mutation. INV-5 cannot see it because the PoolManager's own rounding slack masks it.
+
+**Unit, narrow paths.** Caught: shares mint open, standby rate open, curator check removed, both D-9 guard removals, reentrancy lock removed, oracle off-by-one.
+
+**Gap fixed:** "deposit idle slice rounds down" also survived the unit suite. `VaultLifecycle` now pins the idle slices exactly (ceil on deposit, floor on redeem). Re-run on 2026-11-27 against `VaultLifecycle.t.sol`: **caught by 2 tests** ("idle0 slice is ceil: 11217123132234 != 11217123132235").
+
+**Test findings, not code findings:**
+- With zero elapsed time the anchor equals spot; the first lens differential disagreed by 18% until time passed (documented in CONTRACTS and TESTING).
+- T5 premise corrected: a deposit stores the post-add sample, so the protections are the exit notice and `min(before, after)` on re-ranges (THREAT_MODEL T5).
