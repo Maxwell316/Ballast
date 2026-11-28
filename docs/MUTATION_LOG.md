@@ -169,3 +169,10 @@ Not reported by the first run, re-run after the fixes (4, all caught): live dept
 **Test findings, not code findings:**
 - With zero elapsed time the anchor equals spot; the first lens differential disagreed by 18% until time passed (documented in CONTRACTS and TESTING).
 - T5 premise corrected: a deposit stores the post-add sample, so the protections are the exit notice and `min(before, after)` on re-ranges (THREAT_MODEL T5).
+
+## M8 continuation (2026-11-28)
+
+The curator authorization guard was removed from `BallastVaults` in a scratch mutation and the focused
+`AccessControl.t.sol` suite was run via `MUTATE_MATCH_PATH`. **Caught by 2 tests**: an unauthorized seed no
+longer failed with the expected `NotCurator` error, and the selector-specific curator authorization check failed.
+The mutator restored the source; no `src/BallastVaults.sol` diff remained.

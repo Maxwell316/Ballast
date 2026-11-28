@@ -65,14 +65,50 @@ Invariants implemented: INV-1 … INV-12, INV-14 and INV-15 (warm is monotonic) 
 | Test | Narrative | Asserts |
 |---|---|---|
 | `Crash` | Price falls through the band; lock engages; liquidation-sized sell executes; exits blocked; market recovers; exits clear | Lock timing, no exit during lock, depth views over time, post-crash redeem succeeds |
-| `Breach` | Anchor drift breaks coverage; grace; flag; accrual pauses; curator restores | Breach flow, record counters, accrual resumes |
-| `Drought` | Sponsor stops funding | Accrual stops; `StandbyDepleted` once; depth views decay as exits mature |
+| `Breach` | Anchor drift breaks coverage; grace; flag; accrual pauses; curator restores | Breach flow, record counters, accrual resumes; both currency orderings and lens construction orders |
+| `Drought` | Sponsor fund is exhausted; an exit ticket approaches maturity and is claimed | Accrual stops; `StandbyDepleted` once; depth views net exits before and after the notice horizon; both currency orderings and lens construction orders |
 | `Manipulation` | Attacker tries T3, T4, T5, T6 | Mitigations hold; attacker cost recorded |
 | `Control` | Same liquidity in a plain pool vs Ballast under the same shock | Metrics feed SIMULATION |
 | `ExitRace` | Matured tickets exist when a crash begins; holders claim as early as the machine allows | Quantifies matured-ticket liquidity that exits before the lock engages, for stated parameters (T18); no claim after the lock engages |
 
 ### 3.7 Static access control (INV-13)
 A test enumerates every external and public selector of `BallastHook` (from the ABI) and maps each to its expected caller class (anyone, curator, sponsor, ticket owner or operator, PoolManager). For each selector it calls from every other class and asserts the revert. A new selector without an entry fails the test. This is also an audit checklist item.
+
+The current implementation classifies every production selector in `AccessControl.t.sol` and behaviorally
+checks the restricted classes (PoolManager callbacks, vault-only custody helpers, sponsor functions, curator
+functions, ticket ownership, and permissionless calls). The selector list is an allowlist, not proof by itself
+that every caller class was tried against every selector; the explicit negative-call tests are the behavior
+evidence. The mutation check records representative removed curator and sponsor guards.
+
+### 3.8 Lens independence audit (INV-9)
+
+For each depth assertion, the test's expected value must come from a source independent of the lens, vaults, and
+the same depth-math implementation on the same inputs. This table records the source used by the high-risk view
+checks; the broader per-test review is recorded in the table immediately below.
+
+| Surface | Independent evidence | What it establishes |
+|---|---|---|
+| `DepthMath` and `BallastDepth` | Real swaps in a separate plain PoolManager pool; committed tick-reference vectors | Conservative absorbable collateral and documented rounding tolerance |
+| `BallastLens.liveDepth` and `committedDepth` | `LensDifferential` and `BallastInvariant` compare against plain-pool swaps; invariant netting derives exiting shares from the share-token escrow | Both lens views do not overstate live or committed depth, including exits and breaches |
+| Exit netting | Closed-form share ratios, exact horizon boundaries, and share-token escrow; mutation tests remove netting or change its rounding | Maturing exits reduce risk-consumer depth with conservative rounding |
+| `SupplyCapAdvisor` | `SupplyCapAdvisor.t.sol` pins the underlying depth to the external vector and plain-pool swap before checking multiplication | Advisor output uses `liveDepth`, not a lens-derived expected value |
+| `Crash` depth assertions | Fixed far-edge before/after comparison, closed-form net sale and a plain-pool swap for the initial depth | Consumed collateral changes depth to a fixed edge by the measured sale amount |
+| Storage decoded by the lens | `LensLayout` compares decoded values to the vaults test harness | Lens storage offsets and field interpretation stay in sync |
+
+`LensDifferential` exercises six order/decimal/constructor-order variants; the handler-based INV-9 check exercises
+those same dimensions and samples a plain-pool differential during invariant sequences. Swap measurements are the
+behavioral reference and reference vectors are the absolute arithmetic check; a comparison of the lens to
+`DepthMath` alone is not treated as depth correctness evidence.
+
+### 3.9 Pool currency-order audit
+
+The order-sensitive code was searched for assumptions about collateral being `currency0` or `currency1`. The
+hook and lens derive the direction from sorted currency addresses; `BallastHook._beforeInitialize` validates the
+sorted pair, while `BallastLens` derives the same immutable direction from the configured collateral and quote.
+The deployment script deliberately sorts mock-token deployment order so collateral is `currency0`, but this is a
+deployment convenience rather than a contract requirement. Tests in `HookCallbacks`, `Matrix`,
+`LensDifferential`, `LensDepth`, `Crash`, and the invariant matrix exercise collateral in both positions. Any new
+price-direction or token-delta logic must use the matrix helpers and keep both orderings in its tests.
 
 ### 3.6 Fork
 Run key flows on the target chain's PoolManager at a pinned block. Skip with a clear message if `RPC_URL` is unset. Purpose: catch deployment-specific differences (hook flag bit order, token behaviour, PositionManager interaction). `test/fork/HooksOnChain.t.sol` is the first fork test: a test hook carrying Ballast's five flags is placed with `deployCodeTo` on a fork of the Unichain Sepolia PoolManager and shows every callback firing, external liquidity changes blocked while the hook's own succeed, and claims-based settlement (docs/VERIFICATION.md F-3). Run: `RPC_URL=https://sepolia.unichain.org forge test --match-contract HooksOnChainTest`.

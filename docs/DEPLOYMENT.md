@@ -26,10 +26,10 @@ Load with `source .env`. Do not commit `.env`.
 
 | Profile | Purpose | Windows |
 |---|---|---|
-| `prodlike` | Foundry scenario tests with time warping | hours (24 h anchor, 15 min short window, 24 h max lock) |
-| `demo` | Public testnet, no time warp | minutes (for example 20 min anchor, 3 min short window, 15 min max lock) |
+| `prodlike` | Foundry scenario tests with time warping | hours (see `test/utils/ConfigFixture.sol`) |
+| `demo` | Public testnet, no time warp | 1 h anchor, 5 min short window, 10 min calm duration, 30 min maximum lock, 5 min exit notice (`script/config/DemoConfig.sol`) |
 
-Both are defined as constants in `script/Config.s.sol` and mirrored in `docs/SIMULATION.md`. Demo values are for demonstrations only. They must be stated as such in the README.
+The demo values are defined in `script/config/DemoConfig.sol`; prodlike values are in `test/utils/ConfigFixture.sol`. Demo values are for demonstrations only. They must be stated as such in the README.
 
 ## 4. Local flow (anvil or fork)
 

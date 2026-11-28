@@ -47,3 +47,9 @@ Slither 0.11.4, `slither . --config-file slither.config.json --fail-low`. The CI
 | `dead-code` (informational) | `BallastVaults._coverShortfall`, `_requireBound`, `_settleNet`, `_shrink` | False positive from the limitation: `createVault` calls `_requireBound`, `_opRerange` calls the other three. |
 | `assembly` (informational) | `Transient.get/set`, `BallastVaults.extsload` | Documented one-opcode helpers; `extsload` is the lens's read primitive (ADR-050). |
 | `cyclomatic-complexity` (informational) | `ConfigLib.validate`, `HookPermissions.flags`, `StressMachine.next` | Accepted, see M0 to M2. |
+
+## 2026-11-28 re-run
+
+Re-ran the CI command exactly: `slither . --config-file slither.config.json --fail-low` with Slither 0.11.4. Exit status 0;
+no low, medium or high findings. The same three IR-generation limitations and the same informational `assembly`,
+`cyclomatic-complexity` and `dead-code` findings above remain.

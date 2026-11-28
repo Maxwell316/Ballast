@@ -11,7 +11,7 @@ import {PoolKey} from "@uniswap/v4-core/src/types/PoolKey.sol";
 import {PoolId, PoolIdLibrary} from "@uniswap/v4-core/src/types/PoolId.sol";
 import {FullMath} from "@uniswap/v4-core/src/libraries/FullMath.sol";
 import {SwapParams} from "@uniswap/v4-core/src/types/PoolOperation.sol";
-import {Matrix, C0Before, C1After} from "../utils/Matrix.sol";
+import {Matrix, C0Before, C0After, C1Before, C1After} from "../utils/Matrix.sol";
 import {BallastVaults} from "../../src/BallastVaults.sol";
 import {ConfigFixture} from "../utils/ConfigFixture.sol";
 import {BallastHookHarness} from "../utils/BallastHookHarness.sol";
@@ -21,6 +21,7 @@ import {BallastLens} from "../../src/periphery/BallastLens.sol";
 import {BallastStandby} from "../../src/BallastStandby.sol";
 import {BallastShares} from "../../src/BallastShares.sol";
 import {
+    Config,
     LockState,
     Position,
     PositionView,
@@ -493,8 +494,28 @@ abstract contract BallastInvariantBase is Matrix {
     BallastHandler internal handler;
     uint256 internal constant SEEDED_VAULTS = 3;
 
+    /// @dev Variant knobs (INV-9 runs over decimals 18/6, 6/18, 18/18; fee zero and non-zero; protocol fee zero and
+    /// non-zero). Leaves override these; the defaults are the original 18/6, compressed-config fee, no protocol fee.
+    function _decimals() internal pure virtual returns (uint8 cd, uint8 qd) {
+        return (18, 6);
+    }
+
+    function _poolFee() internal view virtual returns (uint24) {
+        return ConfigFixture.compressed().fee;
+    }
+
+    function _protocolFee() internal pure virtual returns (uint24) {
+        return 0;
+    }
+
     function setUp() public {
-        _setUpMatrix(ConfigFixture.compressed(), 0);
+        Config memory c = ConfigFixture.compressed();
+        c.fee = _poolFee();
+        lensAfterInit = _lensAfter();
+        (uint8 cd, uint8 qd) = _decimals();
+        _setUpWith(_c0(), cd, qd, c, 0);
+        pm.setProtocolFeeController(address(this));
+        if (_protocolFee() != 0) pm.setProtocolFee(key, _protocolFee());
         band750 = uint24(_tableTicks(750)); // cached: invariant functions do not persist state
         MockERC20 q = MockERC20(address(quote));
         q.mint(ConfigFixture.SPONSOR, 1e18);
@@ -772,24 +793,79 @@ abstract contract BallastInvariantBase is Matrix {
         }
     }
 
-    /// INV-9 (sampled every 16th call): the lens never reports more pool-wide depth than a real swap through a plain
-    /// pool holding the same positions absorbs between the same edges, and not less than the allowance below it
-    /// (`BruteForce`). The plain pool lives only inside a snapshot, so the run's state is untouched. Skipped when the
-    /// spot is within a band of the tick limits (a crash through all liquidity), where the edge is clamped.
+    /// INV-9 (sampled every 16th call): the lens never reports more depth than a real swap through a plain pool
+    /// holding the same positions absorbs between the same edges, and not less than the allowance below it
+    /// (`BruteForce`). Checked pool-wide (live), per vault (live and committed at the hook's anchor), for
+    /// `committedDepth()` (min with the commitment, vaults in breach excluded) and for `liveDepth` with and without
+    /// the maximum netting horizon (exits taken from the share ledger's escrow, not from the lens). The plain pools
+    /// live only inside a snapshot, so the run's state is untouched. Skipped when the spot or anchor is within a band
+    /// of the tick limits (a crash through all liquidity), where the edge is clamped.
     function invariant_Inv9_LensNeverOverstatesTheMeasuredDepth() public {
         if (handler.calls() % 16 != 0) return;
         (uint160 sqrtP, int24 spot,,) = IPoolManager(address(pm)).getSlot0(pid);
-        if (spot > 800_000 || spot < -800_000) return;
+        int24 anchor = hook.stressInfo().anchorTick;
+        if (spot > 800_000 || spot < -800_000 || anchor > 800_000 || anchor < -800_000) return;
         Position[] memory all = _allPositions();
         if (all.length == 0) return;
-        int24 far = collateralIs0 ? spot - int24(band750) : spot + int24(band750);
+        int24 band = int24(band750);
+        int24 liveFar = collateralIs0 ? spot - band : spot + band;
+        int24 bandFar = collateralIs0 ? anchor - band : anchor + band;
+        uint256 n = lens.vaultCount();
         uint256 got = lens.poolAbsorbable(750);
+        uint256 gotCommitted = lens.committedDepth();
+        uint256 gotLive0 = lens.liveDepth(750, 0);
+        uint256 gotLiveMax = lens.liveDepth(750, type(uint32).max);
+
         uint256 snap = vm.snapshotState();
-        Plain memory p = _plainPool(all, sqrtP, cfg.fee, 0);
-        (uint256 narrow, uint256 wide,) = _absorbTwoStage(p, far);
+        uint256 narrow;
+        uint256 wide;
+        {
+            Plain memory p = _plainPool(all, sqrtP, cfg.fee, _protocolFee());
+            (narrow, wide,) = _absorbTwoStage(p, liveFar);
+        }
+        uint256[6] memory sums; // liveHi, liveMaxHi, liveMaxLo, commHi, commLo, live0Lo
+        for (uint256 v = 1; v <= n; ++v) {
+            uint256 s = vaults.shareToken().totalSupply(v);
+            if (s == 0) continue;
+            Position[] memory ps = _positionsOf(v);
+            uint256 tol = tolerance(ps.length);
+            // escrow: exactly the open tickets
+            uint256 e = vaults.shareToken().balanceOf(address(vaults), v);
+            Plain memory live = _plainPool(ps, sqrtP, cfg.fee, _protocolFee());
+            (uint256 lNarrow, uint256 lWide,) = _absorbTwoStage(live, liveFar);
+            lNarrow = lNarrow > tol ? lNarrow - tol : 0;
+            sums[0] += lWide;
+            sums[1] += FullMath.mulDiv(lWide, s - e, s);
+            sums[2] += FullMath.mulDiv(lNarrow, s - e, s);
+            sums[5] += lNarrow;
+            VaultView memory vv = lens.vault(v);
+            if (vv.breachSince == 0) {
+                Plain memory comm =
+                    _plainPool(ps, TickMath.getSqrtPriceAtTick(anchor), cfg.fee, _protocolFee());
+                (uint256 cNarrow, uint256 cWide,) = _absorbTwoStage(comm, bandFar);
+                cNarrow = cNarrow > tol ? cNarrow - tol : 0;
+                sums[3] += cWide < vv.commitment ? cWide : vv.commitment;
+                sums[4] += cNarrow < vv.commitment ? cNarrow : vv.commitment;
+            }
+        }
         vm.revertToState(snap);
-        assertLe(got, wide, "INV-9 overstates");
-        assertGe(got + tolerance(all.length), narrow, "INV-9 looser than the allowance");
+
+        assertLe(got, wide, "INV-9 pool-wide live overstates");
+        assertGe(got + tolerance(all.length), narrow, "INV-9 pool-wide live looser than allowance");
+        assertLe(gotLive0, sums[0], "INV-9 liveDepth(0) overstates");
+        assertLe(gotLiveMax, sums[1], "INV-9 liveDepth(max horizon) overstates");
+        assertGe(gotLiveMax + n, sums[2], "INV-9 liveDepth(max horizon) looser than allowance");
+        assertGe(gotLive0 + n, sums[2], "INV-9 liveDepth(0) below even the fully netted figure");
+        assertLe(gotCommitted, sums[3], "INV-9 committedDepth overstates");
+        assertGe(gotCommitted + n, sums[4], "INV-9 committedDepth looser than allowance");
+    }
+
+    function _positionsOf(uint256 v) internal view returns (Position[] memory ps) {
+        PositionView[] memory pv = lens.positionsOf(v);
+        ps = new Position[](pv.length);
+        for (uint256 i; i < pv.length; ++i) {
+            ps[i] = Position(pv[i].tickLower, pv[i].tickUpper, pv[i].liquidity);
+        }
     }
 
     function _allPositions() internal view returns (Position[] memory out) {
@@ -821,6 +897,60 @@ abstract contract BallastInvariantBase is Matrix {
     }
 }
 
+/// @dev Six variants: both collateral orderings x decimals 18/6, 6/18, 18/18, with the lens built before or after the
+/// pool, fee zero and non-zero, and protocol fee zero and non-zero (INV-9).
 contract BallastInvariantTest_C0Before is BallastInvariantBase, C0Before {}
 
 contract BallastInvariantTest_C1After is BallastInvariantBase, C1After {}
+
+contract BallastInvariantTest_C1Before_6_18 is BallastInvariantBase, C1Before {
+    function _decimals() internal pure override returns (uint8, uint8) {
+        return (6, 18);
+    }
+
+    function _poolFee() internal pure override returns (uint24) {
+        return 0;
+    }
+
+    function _protocolFee() internal pure override returns (uint24) {
+        return 3 | (7 << 12);
+    }
+}
+
+contract BallastInvariantTest_C0After_6_18 is BallastInvariantBase, C0After {
+    function _decimals() internal pure override returns (uint8, uint8) {
+        return (6, 18);
+    }
+
+    function _poolFee() internal pure override returns (uint24) {
+        return 3000;
+    }
+
+    function _protocolFee() internal pure override returns (uint24) {
+        return 250 | (400 << 12);
+    }
+}
+
+contract BallastInvariantTest_C0Before_18_18 is BallastInvariantBase, C0Before {
+    function _decimals() internal pure override returns (uint8, uint8) {
+        return (18, 18);
+    }
+
+    function _poolFee() internal pure override returns (uint24) {
+        return 500;
+    }
+
+    function _protocolFee() internal pure override returns (uint24) {
+        return 1000 | (1000 << 12);
+    }
+}
+
+contract BallastInvariantTest_C1After_18_18 is BallastInvariantBase, C1After {
+    function _decimals() internal pure override returns (uint8, uint8) {
+        return (18, 18);
+    }
+
+    function _poolFee() internal pure override returns (uint24) {
+        return 0;
+    }
+}

@@ -25,7 +25,7 @@ Ballast custodies liquidity. Treat it as unaudited software unless an audit repo
 - Sponsor funds are not withdrawable in v1. The sponsor stops spending by setting the rate to zero and should fund in tranches (ADR-021).
 - Exit race at crash onset (T18): stress detection uses a short TWAP and lags spot, so holders with already matured tickets can exit in the first minutes of a crash before the lock engages. `liveDepth` nets exits maturing inside the consumer's horizon so the exposure is visible.
 - Only the configured `initializer` can initialize the pool, and the fee and tick spacing are fixed in the hook's configuration (ADR-014).
-- Consumers should size caps from `liveDepth`, not `committedDepth`.
+- Consumers should size caps from `liveDepth`, not `committedDepth`. Select `impactBps` for the relevant liquidation-penalty assumption and `horizon` for the required availability window; `SupplyCapAdvisor` is illustrative and does not prescribe either parameter or the multiplier.
 - Demo deployments use compressed time windows. They are not production parameters.
 
 ## Reporting a vulnerability

@@ -18,7 +18,7 @@ Lending risk teams size collateral supply caps from DEX depth. The public method
 2. **Curator vaults.** Curators choose ranges and a depth commitment. Depositors hold proportional, in-kind vault shares (no price oracle in share accounting).
 3. **Notice and stress lock.** Exits go through a notice queue. When the pool's short-term TWAP falls sharply versus its own anchor TWAP, the queue freezes until calm or a hard maximum lock elapses. The lock cannot re-arm until the market has been calm.
 4. **Standby fee.** A sponsor funds a per-second standby fee paid to vaults on verified, conservatively sampled committed depth.
-5. **Depth views.** `committedDepth`, `liveDepth(impactBps, horizon)` and `lockState` let risk consumers read guaranteed depth, net of exits maturing inside their horizon. **Lenders should size caps from `liveDepth`.** `committedDepth` is anchor-based and exists for coverage and reward accounting.
+5. **Depth views.** `committedDepth`, `liveDepth(impactBps, horizon)` and `lockState` let risk consumers read guaranteed depth, net of exits maturing inside their horizon. **Lenders should size caps from `liveDepth`**, choosing an impact level that matches their liquidation-penalty assumption and a horizon that matches how long the depth must remain available. `committedDepth` is anchor-based and exists for coverage and reward accounting; it does not net exits. `SupplyCapAdvisor` is illustrative, and its multiplier is a consumer policy choice.
 
 Ballast does **not** protect depositors from price losses. The lock holds risk in place on purpose, and depositors are paid a standby fee for bearing it.
 

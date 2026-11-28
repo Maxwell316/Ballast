@@ -8,7 +8,9 @@ import {Position} from "../../src/types/Types.sol";
 import {IPoolManager} from "@uniswap/v4-core/src/interfaces/IPoolManager.sol";
 import {StateLibrary} from "@uniswap/v4-core/src/libraries/StateLibrary.sol";
 import {IBallastErrors} from "../../src/interfaces/IBallastErrors.sol";
+import {IBallastDepthOracle} from "../../src/interfaces/IBallastDepthOracle.sol";
 import {LockState, Range, StressInfo, TicketView} from "../../src/types/Types.sol";
+import {SupplyCapAdvisor} from "../../src/periphery/SupplyCapAdvisor.sol";
 
 /// @notice The stress gate end to end through the vaults: a crash engages the lock, a liquidation-sized sell still
 /// executes against the committed liquidity, exits and re-ranges are refused while the lock is active, the lock
@@ -148,6 +150,22 @@ abstract contract CrashBase is StressDriver, Matrix {
         // The liquidity that served it was still locked in the pool throughout.
         _expectLocked();
         vaults.claimRedeem(matured, address(this));
+    }
+
+    /// @notice The reference advisor uses the lender-facing live-depth view: a matured exit is netted while calm,
+    /// then included again once stress makes it unable to leave at the zero-second horizon.
+    function test_ConsumerCap_UsesLiveDepthAndRespectsTheLockHorizon() public {
+        _setUpCrash(1 hours);
+        SupplyCapAdvisor advisor = new SupplyCapAdvisor(IBallastDepthOracle(address(lens)));
+
+        uint256 calmLive = lens.liveDepth(750, 0);
+        assertLt(calmLive, lens.poolAbsorbable(750), "calm view nets the matured exit");
+        assertEq(advisor.suggestedCap(2e18, 750, 0), calmLive * 2);
+
+        _toStress();
+        uint256 lockedLive = lens.liveDepth(750, 0);
+        assertEq(lockedLive, lens.poolAbsorbable(750), "locked exit is not netted at horizon zero");
+        assertEq(advisor.suggestedCap(2e18, 750, 0), lockedLive * 2);
     }
 
     // ─── the product, stronger: depth to a FIXED far edge falls by exactly what was sold ───
